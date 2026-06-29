@@ -9,6 +9,17 @@ export * as sexpr from './sexpr/index.js';
 export { parse, serialize } from './sexpr/index.js';
 
 export * as model from './model/index.js';
-export { readSchematic } from './model/index.js';
+export * from './model/index.js';
+
+export * as geom from './geom/index.js';
+export {
+  type Transform,
+  IDENTITY,
+  rotationTransform,
+  composeMirror,
+  symbolTransform,
+  applyTransform,
+  localToWorld,
+} from './geom/index.js';
 
 export { SCH_IU_PER_MM, mmToIU, iuToMM } from './units.js';

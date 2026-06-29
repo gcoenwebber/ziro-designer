@@ -49,8 +49,20 @@ GPL-3.0-or-later. See [LICENSE](./LICENSE).
 ```
 ziroeda/
   packages/
-    core/        # framework-agnostic foundations (this is where work has started)
-  apps/          # browser applications (schematic editor first)
+    core/        # framework-agnostic foundations: sexpr, model, geometry
+  apps/
+    schematic/   # React + Canvas2D schematic viewer/editor
+```
+
+### `@ziroeda/schematic`
+
+A React + Canvas2D app that renders a real `.kicad_sch` faithfully: symbols (via
+their library graphics + the placement transform), pins, wires, junctions, labels
+and fields, on a pannable/zoomable canvas with a KiCad-style theme. Run it with:
+
+```bash
+pnpm -C apps/schematic dev      # http://localhost:5173
+pnpm -C apps/schematic build    # typecheck + production build
 ```
 
 ### `@ziroeda/core`
@@ -80,9 +92,9 @@ pnpm -C packages/core typecheck
 ## Roadmap (schematic capture first)
 
 1. **Lossless file I/O** — S-expression parser/serializer. ✅
-2. **Typed document model** — symbols, pins, wires, labels, junctions. ← _in progress_
-3. **Read-only viewer** — render a real `.kicad_sch` faithfully on a canvas.
-4. **Selection + move** — introduces the command bus and undo/redo.
+2. **Typed document model** — symbols, pins, wires, labels, junctions. ✅
+3. **Read-only viewer** — render a real `.kicad_sch` faithfully on a canvas. ✅
+4. **Selection + move** — introduces the command bus and undo/redo. ← _next_
 5. **Place + wire** — symbol placement from a library; wiring with junctions.
 6. **Save** — byte-faithful write-back, verified against KiCad's own output.
 
