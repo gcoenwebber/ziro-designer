@@ -18,6 +18,14 @@ const RADIO_GROUPS: string[][] = [
 const DEFAULT_TOGGLES = new Set(['toggleGrid', 'unitsMm', 'crosshairFull', 'lineMode90', 'showHierarchy', 'showProperties']);
 const PX_PER_MM_100 = 3.7795;
 
+// KiCad's Selection Filter categories, laid out in two columns (row-major).
+const FILTER_CATS: [string, string][] = [
+  ['symbols', 'Symbols'], ['pins', 'Pins'],
+  ['wires', 'Wires'], ['labels', 'Labels'],
+  ['graphics', 'Graphics'], ['images', 'Images'],
+  ['text', 'Text'], ['other', 'Other items'],
+];
+
 function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const initial = useMemo<Schematic | null>(() => {
@@ -36,6 +44,7 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
   const [activeTool, setActiveTool] = useState('select');
   const [placeLib, setPlaceLib] = useState<LibSymbol | null>(null);
   const [toggles, setToggles] = useState<Set<string>>(new Set(DEFAULT_TOGGLES));
+  const [selFilter, setSelFilter] = useState<Set<string>>(new Set(FILTER_CATS.map((c) => c[0])));
   const [cursor, setCursor] = useState<Vec2 | null>(null);
   const [scale, setScale] = useState(1);
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
@@ -154,7 +163,7 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
           <div className="ze-panel left">
             <div className="ze-panel-header">Choose a Symbol</div>
             <div className="ze-panel-body">
-              <div style={{ padding: '4px 4px 8px', color: '#555', fontSize: 12 }}>
+              <div className="ze-muted" style={{ paddingBottom: 8 }}>
                 {placeLib ? `Placing ${placeLib.libId} — click on the canvas.` : '① Pick a symbol below, then click the canvas to place it.'}
               </div>
               {SYMBOL_LIBRARY.map((lib) => (
@@ -168,10 +177,43 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
               ))}
             </div>
           </div>
-        ) : toggles.has('showHierarchy') && (
-          <div className="ze-panel left">
-            <div className="ze-panel-header">Schematic Hierarchy</div>
-            <div className="ze-panel-body"><div className="ze-tree-item active">📄 {title}</div></div>
+        ) : (
+          <div className="ze-leftdock">
+            <div className="ze-panel grow">
+              <div className="ze-panel-header">Properties</div>
+              <div className="ze-panel-body">
+                <div className="ze-muted">{selection.size === 0 ? 'No objects selected' : `${selection.size} item(s) selected`}</div>
+              </div>
+            </div>
+            <div className="ze-panel">
+              <div className="ze-panel-header">Schematic Hierarchy</div>
+              <div className="ze-panel-body"><div className="ze-tree-item active">📄 {title} (page 1)</div></div>
+            </div>
+            <div className="ze-panel">
+              <div className="ze-panel-header">Selection Filter</div>
+              <div className="ze-panel-body">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={selFilter.size === FILTER_CATS.length}
+                    onChange={() => setSelFilter((p) => (p.size === FILTER_CATS.length ? new Set() : new Set(FILTER_CATS.map((c) => c[0]))))}
+                  />
+                  All items
+                </label>
+                <div className="ze-selfilter">
+                  {FILTER_CATS.map(([key, label]) => (
+                    <label key={key}>
+                      <input
+                        type="checkbox"
+                        checked={selFilter.has(key)}
+                        onChange={() => setSelFilter((p) => { const n = new Set(p); n.has(key) ? n.delete(key) : n.add(key); return n; })}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -191,40 +233,17 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
           />
         </div>
 
-        {toggles.has('showProperties') && (
-          <div className="ze-panel right">
-            <div className="ze-panel-header">Properties</div>
-            <div className="ze-panel-body">
-              <div className="ze-prop-row"><span className="k">Selected</span><span className="v">{selection.size}</span></div>
-              <div className="ze-prop-row"><span className="k">Paper</span><span className="v">{doc.paper ?? '—'}</span></div>
-              <div className="ze-prop-row"><span className="k">Symbols</span><span className="v">{doc.symbols.length}</span></div>
-              <div className="ze-prop-row"><span className="k">Wires</span><span className="v">{doc.lines.length}</span></div>
-              <div className="ze-prop-row"><span className="k">Junctions</span><span className="v">{doc.junctions.length}</span></div>
-              <div className="ze-prop-row"><span className="k">Labels</span><span className="v">{doc.labels.length}</span></div>
-            </div>
-          </div>
-        )}
-
         <Toolbar entries={RIGHT_TOOLBAR} orientation="vertical" side="right" activeTool={activeTool} onActivate={setActiveTool} />
       </div>
 
       <div className="ze-statusbar">
-        <span className="cell">X {cursor ? fmt(cursor.x) : '—'}</span>
-        <span className="cell">Y {cursor ? fmt(cursor.y) : '—'}</span>
-        <span className="cell">grid {units === 'mm' ? '1.2700' : units === 'mils' ? '50.00' : '0.0500'} {units}</span>
-        <span className="cell">{units}</span>
-        <span className="cell">Z {Number.isFinite(zoomPct) ? zoomPct : 100}%</span>
-        <span className="cell grow">
-          {activeTool === 'placeSymbol'
-            ? (placeLib ? `Place ${placeLib.libId} — click to place, Esc to stop` : 'Pick a symbol from the panel on the left')
-            : activeTool === 'drawWire'
-            ? 'Draw wire — click to add segments, double-click or Esc to finish'
-            : activeTool === 'delete'
-              ? 'Delete tool — click an item to delete it'
-              : selection.size > 0
-                ? `${selection.size} selected — drag to move, Del to delete, Ctrl+Z to undo`
-                : 'click to select · drag to move · scroll to zoom'}
+        <span className="cell">Z {Number.isFinite(zoomPct) ? (zoomPct / 100).toFixed(2) : '1.00'}</span>
+        <span className="cell">X {cursor ? fmt(cursor.x) : '—'}  Y {cursor ? fmt(cursor.y) : '—'}</span>
+        <span className="cell">
+          dx {cursor ? fmt(cursor.x) : '—'}  dy {cursor ? fmt(cursor.y) : '—'}  dist {cursor ? fmt(Math.hypot(cursor.x, cursor.y)) : '—'}
         </span>
+        <span className="cell">grid {units === 'mm' ? '1.2700' : units === 'mils' ? '50' : '0.0500'}</span>
+        <span className="cell grow">{units}</span>
       </div>
     </div>
   );

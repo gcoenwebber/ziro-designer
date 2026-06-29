@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { Icon } from './icons.js';
+import { toolbarIconUrl } from './toolbarIcons.js';
 import type { ToolEntry } from './toolbars.js';
 
 interface Props {
@@ -19,6 +20,7 @@ export function Toolbar({ entries, orientation, side, activeTool, toggled, onAct
       {entries.map((e, i) => {
         if (e === 'sep') return <span key={`s${i}`} className="ze-sep" />;
         const isActive = activeTool === e.id || toggled?.has(e.id);
+        const url = toolbarIconUrl(e.id);
         return (
           <button
             key={e.id}
@@ -28,7 +30,7 @@ export function Toolbar({ entries, orientation, side, activeTool, toggled, onAct
             aria-pressed={isActive}
             onClick={() => onActivate?.(e.id)}
           >
-            <Icon name={e.icon} />
+            {url ? <img src={url} alt="" /> : <Icon name={e.icon} />}
           </button>
         );
       })}
