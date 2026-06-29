@@ -11,6 +11,15 @@ export { parse, serialize } from './sexpr/index.js';
 export * as model from './model/index.js';
 export * from './model/index.js';
 
+import { writeSchematic as _writeSchematic } from './model/index.js';
+import { serialize as _serialize } from './sexpr/index.js';
+import type { Schematic as _Schematic } from './model/index.js';
+
+/** Serialize an edited schematic back to `.kicad_sch` text. */
+export function serializeSchematic(sch: _Schematic): string {
+  return _serialize(_writeSchematic(sch));
+}
+
 export * as geom from './geom/index.js';
 export {
   type Transform,

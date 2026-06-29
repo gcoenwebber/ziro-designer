@@ -102,7 +102,8 @@ pnpm -C packages/core typecheck
 4. **Selection + move + command bus** — click/box hit-testing, undo/redo. ✅
 5. **Draw wire + delete** — wire tool with junction auto-creation; add/delete commands. ✅
 6. **Place symbol** — placement from a bundled subset of KiCad's symbol libraries. ✅
-7. **Save** — byte-faithful write-back, verified against KiCad's own output. ← _next_
+7. **Save** — write the edited document back to `.kicad_sch`, preserving unmodified nodes. ✅
 
-Connectivity (the net-building "connection graph"), ERC, netlist export, and the
-other tools (pcbnew, gerbview, …) follow once the schematic editor is solid.
+Connectivity (the net-building "connection graph"), ERC, and netlist export are
+the natural next steps, then the other tools (pcbnew, gerbview, …).
+

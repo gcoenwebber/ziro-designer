@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { parse, readSchematic, iuToMM, deleteByIds, History, type Schematic, type LibSymbol, type EditCommand, type Vec2 } from '@ziroeda/core';
+import { parse, readSchematic, serializeSchematic, iuToMM, deleteByIds, History, type Schematic, type LibSymbol, type EditCommand, type Vec2 } from '@ziroeda/core';
 import { SchematicCanvas, type CanvasController, type LineMode } from './components/SchematicCanvas.js';
 import { Toolbar } from './ui/Toolbar.js';
 import { TOP_TOOLBAR, LEFT_TOOLBAR, RIGHT_TOOLBAR, MENUS } from './ui/toolbars.js';
@@ -61,6 +61,20 @@ export function App(): JSX.Element {
   const undo = useCallback(() => setDoc((d) => (d ? history.current.undo(d) ?? d : d)), []);
   const redo = useCallback(() => setDoc((d) => (d ? history.current.redo(d) ?? d : d)), []);
 
+  const save = useCallback(() => {
+    setDoc((d) => {
+      if (!d) return d;
+      const text = serializeSchematic(d);
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/octet-stream' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${d.titleBlock?.title ?? 'schematic'}.kicad_sch`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return d;
+    });
+  }, []);
+
   const lineMode: LineMode = toggles.has('lineModeFree') ? 'free' : toggles.has('lineMode45') ? '45' : '90';
 
   const onTopAction = useCallback((id: string) => {
@@ -69,7 +83,8 @@ export function App(): JSX.Element {
     else if (id === 'zoomOut') controller.current?.zoomOut();
     else if (id === 'undo') undo();
     else if (id === 'redo') redo();
-  }, [undo, redo]);
+    else if (id === 'save') save();
+  }, [undo, redo, save]);
 
   const onLeftToggle = useCallback((id: string) => {
     setToggles((prev) => {
@@ -84,7 +99,10 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        save();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         if (e.shiftKey) redo(); else undo();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
@@ -101,7 +119,7 @@ export function App(): JSX.Element {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo, selection, runCommand, activeTool]);
+  }, [undo, redo, save, selection, runCommand, activeTool]);
 
   const units = toggles.has('unitsInches') ? 'in' : toggles.has('unitsMils') ? 'mils' : 'mm';
   const fmt = (iu: number): string => {
@@ -132,6 +150,9 @@ export function App(): JSX.Element {
           <div className="ze-panel left">
             <div className="ze-panel-header">Choose a Symbol</div>
             <div className="ze-panel-body">
+              <div style={{ padding: '4px 4px 8px', color: '#555', fontSize: 12 }}>
+                {placeLib ? `Placing ${placeLib.libId} — click on the canvas.` : '① Pick a symbol below, then click the canvas to place it.'}
+              </div>
               {SYMBOL_LIBRARY.map((lib) => (
                 <div
                   key={lib.libId}
