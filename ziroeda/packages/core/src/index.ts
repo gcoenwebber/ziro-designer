@@ -22,4 +22,16 @@ export {
   localToWorld,
 } from './geom/index.js';
 
+export * as edit from './edit/index.js';
+export {
+  type ItemRef,
+  type BBox,
+  type EditCommand,
+  History,
+  hitTest,
+  refId,
+  symbolBodyBBox,
+  moveItems,
+} from './edit/index.js';
+
 export { SCH_IU_PER_MM, mmToIU, iuToMM } from './units.js';

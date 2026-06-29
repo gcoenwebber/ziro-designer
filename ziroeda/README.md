@@ -99,8 +99,8 @@ pnpm -C packages/core typecheck
 1. **Lossless file I/O** — S-expression parser/serializer. ✅
 2. **Typed document model** — symbols, pins, wires, labels, junctions. ✅
 3. **Read-only viewer** — render a real `.kicad_sch` faithfully on a canvas. ✅
-4. **Selection + move** — introduces the command bus and undo/redo. ← _next_
-5. **Place + wire** — symbol placement from a library; wiring with junctions.
+4. **Selection + move + command bus** — click/box hit-testing, undo/redo. ✅
+5. **Place + wire** — symbol placement from a library; wiring with junctions. ← _next_
 6. **Save** — byte-faithful write-back, verified against KiCad's own output.
 
 Connectivity (the net-building "connection graph"), ERC, netlist export, and the

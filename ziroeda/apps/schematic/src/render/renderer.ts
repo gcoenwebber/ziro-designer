@@ -12,6 +12,9 @@ import {
   symbolTransform,
   localToWorld,
   iuToMM,
+  refId,
+  symbolBodyBBox,
+  type BBox,
   type Transform,
   type Schematic,
   type LibSymbol,
@@ -19,6 +22,8 @@ import {
   type Vec2,
 } from '@ziroeda/core';
 import type { Theme } from '../theme.js';
+
+const SELECT_COLOR = '#1d7fdd';
 
 /** World(IU) -> screen(px): screenX = worldX * scale + offsetX. */
 export interface Viewport {
@@ -53,6 +58,7 @@ export function renderSchematic(
   theme: Theme,
   canvasWidth: number,
   canvasHeight: number,
+  selection?: ReadonlySet<string>,
 ): void {
   const libById = new Map<string, LibSymbol>();
   for (const lib of sch.libSymbols) libById.set(lib.libId, lib);
@@ -107,6 +113,49 @@ export function renderSchematic(
   for (const l of sch.labels) {
     if (l.effects?.hidden) continue;
     drawText(ctx, l.text, l.at, l.effects?.fontSize?.[0] ?? 1.27 * MM, theme.label, l.effects?.justify);
+  }
+
+  if (selection && selection.size > 0) drawSelection(ctx, sch, libById, viewport, selection);
+}
+
+/** Draw a highlight box around each selected item. */
+function drawSelection(
+  ctx: CanvasRenderingContext2D,
+  sch: Schematic,
+  libById: Map<string, LibSymbol>,
+  viewport: Viewport,
+  selection: ReadonlySet<string>,
+): void {
+  const pad = 0.6 * MM;
+  const boxes: BBox[] = [];
+  sch.symbols.forEach((s, i) => {
+    if (selection.has(refId('symbol', s.uuid, i))) boxes.push(symbolBodyBBox(s, libById.get(s.libId)));
+  });
+  sch.lines.forEach((l, i) => {
+    if (selection.has(refId('line', l.uuid, i)))
+      boxes.push({ minX: Math.min(l.start.x, l.end.x), minY: Math.min(l.start.y, l.end.y), maxX: Math.max(l.start.x, l.end.x), maxY: Math.max(l.start.y, l.end.y) });
+  });
+  sch.junctions.forEach((j, i) => {
+    if (selection.has(refId('junction', j.uuid, i))) {
+      const r = (j.diameter > 0 ? j.diameter : 0.9 * MM) / 2;
+      boxes.push({ minX: j.at.x - r, minY: j.at.y - r, maxX: j.at.x + r, maxY: j.at.y + r });
+    }
+  });
+  sch.labels.forEach((l, i) => {
+    if (selection.has(refId('label', l.uuid, i))) {
+      const h = l.effects?.fontSize?.[0] ?? 1.27 * MM;
+      const w = Math.max(1, l.text.length) * h * 0.7;
+      boxes.push({ minX: l.at.x - h, minY: l.at.y - h, maxX: l.at.x + w, maxY: l.at.y + h });
+    }
+  });
+
+  ctx.strokeStyle = SELECT_COLOR;
+  ctx.fillStyle = 'rgba(29,127,221,0.10)';
+  ctx.lineWidth = 1 / viewport.scale; // ~1px regardless of zoom
+  for (const b of boxes) {
+    const x = b.minX - pad, y = b.minY - pad, w = b.maxX - b.minX + 2 * pad, h = b.maxY - b.minY + 2 * pad;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
   }
 }
 
