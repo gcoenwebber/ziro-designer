@@ -20,6 +20,16 @@ const load = (): { sch: Schematic; libById: Map<string, LibSymbol> } => {
   return { sch, libById };
 };
 
+// The fixture's single wire runs exactly between J1's two pins (it forms the antenna
+// loop), so both of its endpoints are connected. For the single-end rubber-band/ortho
+// scenarios we detach the wire's start from pin 2, leaving only its end on pin 1.
+const loadOneEndWire = (): { sch: Schematic; libById: Map<string, LibSymbol> } => {
+  const { sch, libById } = load();
+  const freeStart = { x: mmToIU(161.29), y: mmToIU(105.0) };
+  const lines = sch.lines.map((l, i) => (i === 0 ? { ...l, start: freeStart } : l));
+  return { sch: { ...sch, lines }, libById };
+};
+
 describe('hitTest', () => {
   const { sch, libById } = load();
   const acc = mmToIU(0.3);
@@ -100,7 +110,7 @@ describe('connection-aware move (rubber-banding)', () => {
   });
 
   it('drags the connected wire endpoint with the symbol, keeping the far end fixed', () => {
-    const { sch, libById } = load();
+    const { sch, libById } = loadOneEndWire();
     const ids = new Set(['d5224ac6-3b29-4f27-99e0-c4e878a39680']); // J1
     const spec = planMove(sch, libById, ids);
 
@@ -124,8 +134,8 @@ describe('connection-aware move (rubber-banding)', () => {
 describe('orthogonal move (keeps wires orthogonal with a bend)', () => {
   it('slides a vertical wire along its axis and adds a horizontal bend', async () => {
     const { orthoMove } = await import('../src/edit/ortho.js');
-    const { sch, libById } = load();
-    // The fixture wire is vertical (x=161.29 from y=109.22 to 111.76); its end
+    const { sch, libById } = loadOneEndWire();
+    // The wire is vertical (x=161.29 from y=105.0 to 111.76); only its end
     // (161.29,111.76) connects to J1 pin 1. Move J1 by (Δx, Δy).
     const ids = new Set(['d5224ac6-3b29-4f27-99e0-c4e878a39680']); // J1
     const spec = planMove(sch, libById, ids);
@@ -145,7 +155,7 @@ describe('orthogonal move (keeps wires orthogonal with a bend)', () => {
 
   it('undoes an orthogonal move exactly (removes the bend, reverses)', async () => {
     const { orthoMove } = await import('../src/edit/ortho.js');
-    const { sch, libById } = load();
+    const { sch, libById } = loadOneEndWire();
     const ids = new Set(['d5224ac6-3b29-4f27-99e0-c4e878a39680']);
     const spec = planMove(sch, libById, ids);
     const history = new History();

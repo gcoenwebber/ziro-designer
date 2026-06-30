@@ -21,6 +21,23 @@ describe('readSymbolLib (a real Device:R .kicad_sym)', () => {
     expect(pins).toHaveLength(2);
     expect(R.units.some((u) => u.graphics.length > 0)).toBe(true);
   });
+
+  it('inverts symbol-library Y so pins meet the body (matches KiCad parseXY)', () => {
+    const R = lib[0]!;
+    // R's body rectangle is stored (start -1.016 -2.54)(end 1.016 2.54); after the
+    // +Y-up→+Y-down inversion the body spans y ∈ [-2.54, 2.54] still (symmetric).
+    const rect = R.units.flatMap((u) => u.graphics).find((g) => g.kind === 'rectangle');
+    expect(rect && rect.kind === 'rectangle').toBe(true);
+
+    // Pin 1 is stored at (0, 3.81, 270) length 1.27; inverted it sits at y=-3.81, and
+    // its body end (root = at + length in the orientation direction) is y=-2.54 — exactly
+    // the rectangle's top edge, so the pin connects with no gap.
+    const pin1 = R.units.flatMap((u) => u.pins).find((p) => p.number === '1')!;
+    expect(iuToMM(pin1.at.y)).toBeCloseTo(-3.81, 5);
+    expect(pin1.angle).toBe(270);
+    const rootY = pin1.at.y + pin1.length; // angle 270 -> +Y toward body
+    expect(iuToMM(rootY)).toBeCloseTo(-2.54, 5);
+  });
 });
 
 describe('placeSymbol', () => {

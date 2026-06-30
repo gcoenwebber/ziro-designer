@@ -39,18 +39,25 @@ import type {
   Vec2,
 } from './types.js';
 
-/** Read two positional numeric args (millimetres) starting at `from` as an IU point. */
-function readPoint(node: SList, from: number): Vec2 {
+/**
+ * Read two positional numeric args (millimetres) starting at `from` as an IU point.
+ *
+ * `invertY` negates Y, matching KiCad's parser: symbol *library* geometry is stored
+ * with +Y up (`parseXY(true)`), while the schematic sheet uses +Y down. Inverting on
+ * load puts symbol bodies/pins into the same +Y-down space as the rest of the model,
+ * so pins meet their body and asymmetric symbols are oriented like KiCad.
+ */
+function readPoint(node: SList, from: number, invertY = false): Vec2 {
   const x = numArg(node, from) ?? 0;
   const y = numArg(node, from + 1) ?? 0;
-  return { x: mmToIU(x), y: mmToIU(y) };
+  return { x: mmToIU(x), y: mmToIU(invertY ? -y : y) };
 }
 
 /** Read an `(at x y [angle])` child: position in IU plus angle in degrees. */
-function readAt(node: SList): { at: Vec2; angle: number } {
+function readAt(node: SList, invertY = false): { at: Vec2; angle: number } {
   const at = childNamed(node, 'at');
   if (!at) return { at: { x: 0, y: 0 }, angle: 0 };
-  return { at: readPoint(at, 0), angle: numArg(at, 2) ?? 0 };
+  return { at: readPoint(at, 0, invertY), angle: numArg(at, 2) ?? 0 };
 }
 
 function readStroke(node: SList): Stroke | undefined {
@@ -83,8 +90,8 @@ function readEffects(node: SList): TextEffects | undefined {
   return effects;
 }
 
-function readField(node: SList): SchField {
-  const { at, angle } = readAt(node);
+function readField(node: SList, invertY = false): SchField {
+  const { at, angle } = readAt(node, invertY);
   const field: { -readonly [K in keyof SchField]: SchField[K] } = {
     key: arg(node, 0) ?? '',
     value: arg(node, 1) ?? '',
@@ -106,8 +113,8 @@ function parseUnitName(name: string): { unit: number; bodyStyle: number } {
   return { unit: Number(m[1]), bodyStyle: Number(m[2]) };
 }
 
-function readLibPin(node: SList): LibPin {
-  const { at, angle } = readAt(node);
+function readLibPin(node: SList, invertY = false): LibPin {
+  const { at, angle } = readAt(node, invertY);
   // hide can be a bare `hide` token (legacy) or `(hide yes)`.
   const hideChild = childNamed(node, 'hide');
   const bareHide = node.items.some((it) => it.kind === 'atom' && it.value === 'hide');
@@ -124,7 +131,7 @@ function readLibPin(node: SList): LibPin {
   };
 }
 
-function readGraphic(node: SList): LibGraphic | undefined {
+function readGraphic(node: SList, invertY = false): LibGraphic | undefined {
   const kind = head(node);
   const stroke = readStroke(node);
   const fill = readFill(node);
@@ -140,28 +147,28 @@ function readGraphic(node: SList): LibGraphic | undefined {
       const start = childNamed(node, 'start');
       const end = childNamed(node, 'end');
       if (!start || !end) return undefined;
-      return withSF({ kind: 'rectangle' as const, start: readPoint(start, 0), end: readPoint(end, 0), source: node });
+      return withSF({ kind: 'rectangle' as const, start: readPoint(start, 0, invertY), end: readPoint(end, 0, invertY), source: node });
     }
     case 'circle': {
       const center = childNamed(node, 'center');
       const radius = childNamed(node, 'radius');
       if (!center) return undefined;
-      return withSF({ kind: 'circle' as const, center: readPoint(center, 0), radius: mmToIU(radius ? (numArg(radius, 0) ?? 0) : 0), source: node });
+      return withSF({ kind: 'circle' as const, center: readPoint(center, 0, invertY), radius: mmToIU(radius ? (numArg(radius, 0) ?? 0) : 0), source: node });
     }
     case 'arc': {
       const start = childNamed(node, 'start');
       const mid = childNamed(node, 'mid');
       const end = childNamed(node, 'end');
       if (!start || !mid || !end) return undefined;
-      return withSF({ kind: 'arc' as const, start: readPoint(start, 0), mid: readPoint(mid, 0), end: readPoint(end, 0), source: node });
+      return withSF({ kind: 'arc' as const, start: readPoint(start, 0, invertY), mid: readPoint(mid, 0, invertY), end: readPoint(end, 0, invertY), source: node });
     }
     case 'polyline': {
       const pts = childNamed(node, 'pts');
-      const points = pts ? childrenNamed(pts, 'xy').map((xy) => readPoint(xy, 0)) : [];
+      const points = pts ? childrenNamed(pts, 'xy').map((xy) => readPoint(xy, 0, invertY)) : [];
       return withSF({ kind: 'polyline' as const, points, source: node });
     }
     case 'text': {
-      const { at, angle } = readAt(node);
+      const { at, angle } = readAt(node, invertY);
       const effects = readEffects(node);
       const g: LibGraphic = { kind: 'text', text: arg(node, 0) ?? '', at, angle, source: node };
       return effects ? { ...g, effects } : g;
@@ -171,16 +178,16 @@ function readGraphic(node: SList): LibGraphic | undefined {
   }
 }
 
-function readLibSymbolUnit(node: SList): LibSymbolUnit {
+function readLibSymbolUnit(node: SList, invertY: boolean): LibSymbolUnit {
   const name = arg(node, 0) ?? '';
   const { unit, bodyStyle } = parseUnitName(name);
   const graphics: LibGraphic[] = [];
   const pins: LibPin[] = [];
   for (const item of node.items) {
     if (!isList(item)) continue;
-    if (head(item) === 'pin') pins.push(readLibPin(item));
+    if (head(item) === 'pin') pins.push(readLibPin(item, invertY));
     else {
-      const g = readGraphic(item);
+      const g = readGraphic(item, invertY);
       if (g) graphics.push(g);
     }
   }
@@ -190,10 +197,11 @@ function readLibSymbolUnit(node: SList): LibSymbolUnit {
 function readLibSymbol(node: SList): LibSymbol {
   const units: LibSymbolUnit[] = [];
   const properties: SchField[] = [];
+  // Symbol-library geometry is stored +Y-up; invert it to the model's +Y-down space.
   for (const item of node.items) {
     if (!isList(item)) continue;
-    if (head(item) === 'symbol') units.push(readLibSymbolUnit(item));
-    else if (head(item) === 'property') properties.push(readField(item));
+    if (head(item) === 'symbol') units.push(readLibSymbolUnit(item, true));
+    else if (head(item) === 'property') properties.push(readField(item, true));
   }
   const extendsName = stringField(node, 'extends');
   const pinNamesNode = childNamed(node, 'pin_names');
@@ -271,7 +279,7 @@ function resolveExtends(symbols: LibSymbol[]): LibSymbol[] {
 
 function readSymbol(node: SList): SchSymbol {
   const { at, angle } = readAt(node);
-  const fields = childrenNamed(node, 'property').map(readField);
+  const fields = childrenNamed(node, 'property').map((p) => readField(p));
   const mirrorChild = childNamed(node, 'mirror');
   const mirror = mirrorChild ? arg(mirrorChild, 0) : undefined;
   const sym: { -readonly [K in keyof SchSymbol]: SchSymbol[K] } = {

@@ -79,7 +79,9 @@ describe('readSchematic: library symbol', () => {
     const outline = rects[0]!;
     expect(outline.kind).toBe('rectangle');
     if (outline.kind === 'rectangle') {
-      expect(outline.start).toEqual({ x: mmToIU(-1.27), y: mmToIU(1.27) });
+      // Symbol-library Y is +up; the reader inverts it to the model's +Y-down space,
+      // so the stored corner (-1.27, 1.27) becomes (-1.27, -1.27).
+      expect(outline.start).toEqual({ x: mmToIU(-1.27), y: mmToIU(-1.27) });
       expect(outline.fill?.type).toBe('background');
     }
   });
