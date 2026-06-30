@@ -20,6 +20,14 @@ const LABEL_TOOLS: Record<string, LabelKind> = {
   placeText: 'text',
 };
 
+/** Placeholder shown in the name box, so the label type being placed is clear. */
+const LABEL_PROMPTS: Record<LabelKind, string> = {
+  label: 'Net label…',
+  global_label: 'Global label…',
+  hierarchical_label: 'Hierarchical label…',
+  text: 'Text…',
+};
+
 /** Constrain `pt` relative to `anchor` per the active line-posture mode. */
 function constrain(anchor: Vec2, pt: Vec2, mode: LineMode): Vec2 {
   if (mode === 'free') return pt;
@@ -78,7 +86,7 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
   // Orientation applied to the symbol currently being placed (R/X/Y before dropping).
   const placeOrientRef = useRef<Orientation>({ angle: 0 });
   // In-progress label placement: where it will go and the on-screen input position.
-  const [labelDraft, setLabelDraft] = useState<{ at: Vec2; kind: LabelKind; screen: { x: number; y: number } } | null>(null);
+  const [labelDraft, setLabelDraft] = useState<{ at: Vec2; kind: LabelKind; text: string; screen: { x: number; y: number } } | null>(null);
   const labelInputRef = useRef<HTMLInputElement>(null);
 
   const dpr = () => window.devicePixelRatio || 1;
@@ -106,6 +114,10 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       // Ghost: show the symbol attached to the cursor (with its current orientation).
       doc = placeSymbol(placeLib, snap(cursorRef.current), placeOrientRef.current).apply(schematic);
     }
+    // Ghost: show the label being placed (with its flag) live as the name is typed.
+    if (labelDraft) {
+      doc = addItems({ labels: [makeLabel(labelDraft.kind, labelDraft.text || '…', labelDraft.at)] }).apply(doc);
+    }
     renderSchematic(ctx, doc, vp, KICAD_CLASSIC, canvas.width, canvas.height, selection);
 
     // Wire / bus preview segment.
@@ -122,7 +134,7 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       ctx.stroke();
     }
     onScaleChange?.(vp.scale);
-  }, [schematic, selection, activeTool, lineMode, placeLib, buildMove, onScaleChange]);
+  }, [schematic, selection, activeTool, lineMode, placeLib, labelDraft, buildMove, onScaleChange]);
 
   const zoomAbout = useCallback((px: number, py: number, factor: number) => {
     const vp = viewportRef.current;
@@ -221,7 +233,7 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
     const labelKind = LABEL_TOOLS[activeTool];
     if (labelKind) {
       const rect = canvasRef.current!.getBoundingClientRect();
-      setLabelDraft({ at: snap(world), kind: labelKind, screen: { x: e.clientX - rect.left, y: e.clientY - rect.top } });
+      setLabelDraft({ at: snap(world), kind: labelKind, text: '', screen: { x: e.clientX - rect.left, y: e.clientY - rect.top } });
       return;
     }
 
@@ -370,10 +382,12 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
         <input
           ref={labelInputRef}
           className="ze-label-input"
-          style={{ position: 'absolute', left: labelDraft.screen.x, top: labelDraft.screen.y }}
-          placeholder={labelDraft.kind === 'text' ? 'Text…' : 'Label…'}
+          // Sit just below the anchor so the live label ghost (with its flag) stays visible.
+          style={{ position: 'absolute', left: labelDraft.screen.x, top: labelDraft.screen.y + 18 }}
+          placeholder={LABEL_PROMPTS[labelDraft.kind]}
           autoFocus
-          defaultValue=""
+          value={labelDraft.text}
+          onChange={(e) => setLabelDraft((d) => (d ? { ...d, text: e.target.value } : d))}
           onKeyDown={(e) => {
             e.stopPropagation();
             if (e.key === 'Enter') { e.preventDefault(); commitLabel((e.target as HTMLInputElement).value); }
