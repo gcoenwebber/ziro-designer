@@ -10,6 +10,7 @@
 import { list, atom, str, type SList } from '../sexpr/types.js';
 import { iuToMM } from '../units.js';
 import type { SchLine, SchJunction, SchSymbol, SchField, LibSymbol, Vec2 } from '../model/types.js';
+import type { Orientation } from '../geom/transform.js';
 
 /** A UUID for a new item. Falls back to a random hex string off-platform. */
 export function newUuid(): string {
@@ -80,11 +81,14 @@ function buildPropertyNode(key: string, value: string, at: Vec2, angle: number):
   );
 }
 
-function buildSymbolNode(libId: string, at: Vec2, uuid: string, fields: SchField[]): SList {
-  return list(
+function buildSymbolNode(libId: string, at: Vec2, uuid: string, fields: SchField[], orient: Orientation): SList {
+  const items: SList['items'] = [
     atom('symbol'),
     list(atom('lib_id'), str(libId)),
-    list(atom('at'), atom(mm(at.x)), atom(mm(at.y)), atom('0')),
+    list(atom('at'), atom(mm(at.x)), atom(mm(at.y)), atom(String(orient.angle))),
+  ];
+  if (orient.mirror) items.push(list(atom('mirror'), atom(orient.mirror)));
+  items.push(
     list(atom('unit'), atom('1')),
     list(atom('exclude_from_sim'), atom('no')),
     list(atom('in_bom'), atom('yes')),
@@ -93,6 +97,7 @@ function buildSymbolNode(libId: string, at: Vec2, uuid: string, fields: SchField
     list(atom('uuid'), str(uuid)),
     ...fields.map((f) => f.source),
   );
+  return { kind: 'list', items };
 }
 
 /**
@@ -100,7 +105,7 @@ function buildSymbolNode(libId: string, at: Vec2, uuid: string, fields: SchField
  * the library's reference prefix with a `?` (pre-annotation), as in KiCad; the
  * visible Reference/Value fields are offset using the library's field templates.
  */
-export function makeSymbol(lib: LibSymbol, at: Vec2): SchSymbol {
+export function makeSymbol(lib: LibSymbol, at: Vec2, orient: Orientation = { angle: 0 }): SchSymbol {
   const uuid = newUuid();
   const refProp = lib.properties.find((p) => p.key === 'Reference');
   const valProp = lib.properties.find((p) => p.key === 'Value');
@@ -115,9 +120,11 @@ export function makeSymbol(lib: LibSymbol, at: Vec2): SchSymbol {
   };
 
   const fields: SchField[] = [mkField('Reference', reference, refProp), mkField('Value', value, valProp)];
-  return {
-    libId: lib.libId, at, angle: 0, unit: 1, bodyStyle: 1,
+  const sym: { -readonly [K in keyof SchSymbol]: SchSymbol[K] } = {
+    libId: lib.libId, at, angle: orient.angle, unit: 1, bodyStyle: 1,
     inBom: true, onBoard: true, dnp: false, uuid, fields,
-    source: buildSymbolNode(lib.libId, at, uuid, fields),
+    source: buildSymbolNode(lib.libId, at, uuid, fields, orient),
   };
+  if (orient.mirror) sym.mirror = orient.mirror;
+  return sym;
 }

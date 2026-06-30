@@ -8,6 +8,7 @@
  */
 
 import type { Schematic, SchSymbol, SchLine, SchJunction, SchLabel, LibSymbol, Vec2 } from '../model/types.js';
+import type { Orientation } from '../geom/transform.js';
 import { refId } from './hittest.js';
 import { makeSymbol } from './build.js';
 import type { EditCommand } from './command.js';
@@ -83,8 +84,8 @@ export function deleteByIds(ids: ReadonlySet<string>): EditCommand {
  * `lib_symbols` cache (as KiCad does). Undo removes the instance and the def if it
  * was newly added.
  */
-export function placeSymbol(lib: LibSymbol, at: Vec2): EditCommand {
-  return placeCmd(lib, makeSymbol(lib, at));
+export function placeSymbol(lib: LibSymbol, at: Vec2, orient?: Orientation): EditCommand {
+  return placeCmd(lib, makeSymbol(lib, at, orient));
 }
 
 function placeCmd(lib: LibSymbol, sym: SchSymbol): EditCommand {

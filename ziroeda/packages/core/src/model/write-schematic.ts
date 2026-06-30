@@ -61,8 +61,34 @@ function patchProperty(propNode: SList, field: SchField): SList {
   return n;
 }
 
+/** Set the rotation angle (3rd element) of an `(at x y angle)` child. */
+function patchAtAngle(node: SList, angle: number): SList {
+  return mapChild(node, 'at', (at) => {
+    const items = at.items.slice();
+    items[3] = atom(String(angle));
+    return { kind: 'list', items };
+  });
+}
+
+/**
+ * Reflect the typed mirror axis into the node: insert/update `(mirror x|y)` right
+ * after `(at ...)`, or drop any existing mirror node when the symbol is unmirrored.
+ * Matches KiCad, which writes `(mirror x)` / `(mirror y)` only when mirrored.
+ */
+function patchMirror(node: SList, mirror: 'x' | 'y' | undefined): SList {
+  const items = node.items.filter((it) => !(isList(it) && head(it) === 'mirror'));
+  if (mirror) {
+    const atIdx = items.findIndex((it) => isList(it) && head(it) === 'at');
+    const mirrorNode = list(atom('mirror'), atom(mirror));
+    items.splice(atIdx >= 0 ? atIdx + 1 : items.length, 0, mirrorNode);
+  }
+  return { kind: 'list', items };
+}
+
 function writeSymbol(sym: SchSymbol): SList {
   let node = patchAt(sym.source, sym.at);
+  node = patchAtAngle(node, sym.angle);
+  node = patchMirror(node, sym.mirror);
   const byKey = new Map(sym.fields.map((f) => [f.key, f]));
   node = {
     kind: 'list',

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { parse, readSchematic, serializeSchematic, iuToMM, deleteByIds, History, type Schematic, type LibSymbol, type EditCommand, type Vec2 } from '@ziroeda/core';
+import { parse, readSchematic, serializeSchematic, iuToMM, deleteByIds, transformItems, History, type Schematic, type LibSymbol, type EditCommand, type Vec2, type TransformOp } from '@ziroeda/core';
 import { SchematicCanvas, type CanvasController, type LineMode } from './components/SchematicCanvas.js';
 import { Toolbar } from './ui/Toolbar.js';
 import { TOP_TOOLBAR, LEFT_TOOLBAR, RIGHT_TOOLBAR } from './ui/toolbars.js';
@@ -98,13 +98,16 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
   }, []);
 
   const onTopAction = useCallback((id: string) => {
+    // mirrorV = MirrorVertically (KiCad SYM_MIRROR_X); mirrorH = MirrorHorizontally (SYM_MIRROR_Y).
+    const TX: Record<string, TransformOp> = { rotateCCW: 'rotateCCW', rotateCW: 'rotateCW', mirrorV: 'mirrorX', mirrorH: 'mirrorY' };
     if (id === 'zoomFit' || id === 'zoomFitObjects') controller.current?.zoomToFit();
     else if (id === 'zoomIn') controller.current?.zoomIn();
     else if (id === 'zoomOut') controller.current?.zoomOut();
     else if (id === 'undo') undo();
     else if (id === 'redo') redo();
     else if (id === 'save') save();
-  }, [undo, redo, save]);
+    else if (TX[id]) setSelection((sel) => { if (sel.size > 0) runCommand(transformItems(sel, TX[id]!)); return sel; });
+  }, [undo, redo, save, runCommand]);
 
   const menus = useMemo(() => buildMenus({ tool: onToolSelect, action: onTopAction }), [onToolSelect, onTopAction]);
 

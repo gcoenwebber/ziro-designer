@@ -23,12 +23,17 @@ export function serializeSchematic(sch: _Schematic): string {
 export * as geom from './geom/index.js';
 export {
   type Transform,
+  type Orientation,
   IDENTITY,
   rotationTransform,
   composeMirror,
+  composeTransform,
   symbolTransform,
   applyTransform,
   localToWorld,
+  orientationFromTransform,
+  rotateOrientation,
+  mirrorOrientation,
 } from './geom/index.js';
 
 export * as edit from './edit/index.js';
@@ -54,6 +59,8 @@ export {
   makeWire,
   makeJunction,
   makeSymbol,
+  transformItems,
+  type TransformOp,
 } from './edit/index.js';
 
 export { SCH_IU_PER_MM, mmToIU, iuToMM } from './units.js';

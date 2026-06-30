@@ -1,8 +1,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, useCallback } from 'react';
 import {
   hitTest, planMove, moveWithConnections, orthoMove, addItems, deleteByIds, placeSymbol,
-  makeWire, makeJunction, needsJunction,
-  type MoveSpec, type EditCommand, type Schematic, type LibSymbol, type Vec2,
+  makeWire, makeJunction, needsJunction, rotateOrientation, mirrorOrientation, transformItems,
+  type MoveSpec, type EditCommand, type Schematic, type LibSymbol, type Vec2, type Orientation, type TransformOp,
 } from '@ziroeda/core';
 import { renderSchematic, fitToContent, type Viewport } from '../render/renderer.js';
 import { KICAD_CLASSIC } from '../theme.js';
@@ -67,6 +67,8 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
   // Wire-drawing state.
   const wireAnchorRef = useRef<Vec2 | null>(null);
   const cursorRef = useRef<Vec2 | null>(null);
+  // Orientation applied to the symbol currently being placed (R/X/Y before dropping).
+  const placeOrientRef = useRef<Orientation>({ angle: 0 });
 
   const dpr = () => window.devicePixelRatio || 1;
 
@@ -90,8 +92,8 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
     if (modeRef.current === 'move' && md && spec) {
       doc = buildMove(spec, md).apply(schematic);
     } else if (activeTool === 'placeSymbol' && placeLib && cursorRef.current) {
-      // Ghost: show the symbol attached to the cursor before it is placed.
-      doc = placeSymbol(placeLib, snap(cursorRef.current)).apply(schematic);
+      // Ghost: show the symbol attached to the cursor (with its current orientation).
+      doc = placeSymbol(placeLib, snap(cursorRef.current), placeOrientRef.current).apply(schematic);
     }
     renderSchematic(ctx, doc, vp, KICAD_CLASSIC, canvas.width, canvas.height, selection);
 
@@ -148,9 +150,10 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
   }, [size, schematic, draw]);
 
   useEffect(() => { draw(); }, [selection, draw]);
-  // Cancel an in-progress wire only when the tool actually changes (not on every
-  // schematic update, which would break the multi-segment chain).
-  useEffect(() => { wireAnchorRef.current = null; }, [activeTool]);
+  // Cancel an in-progress wire and reset the placement orientation only when the
+  // tool actually changes (not on every schematic update, which would break the
+  // multi-segment wire chain).
+  useEffect(() => { wireAnchorRef.current = null; placeOrientRef.current = { angle: 0 }; }, [activeTool]);
 
   const toWorld = (clientX: number, clientY: number): Vec2 => {
     const canvas = canvasRef.current!;
@@ -204,7 +207,7 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
     }
 
     if (activeTool === 'placeSymbol') {
-      if (placeLib) onCommand(placeSymbol(placeLib, snap(world))); // stays active to place more
+      if (placeLib) onCommand(placeSymbol(placeLib, snap(world), placeOrientRef.current)); // stays active to place more
       return;
     }
 
@@ -284,14 +287,35 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
     if (activeTool === 'drawWire') { wireAnchorRef.current = null; draw(); }
   }, [activeTool, draw]);
 
-  // Escape ends an in-progress wire.
+  // Escape ends an in-progress wire; R/X/Y rotate/mirror (KiCad hotkeys): the
+  // attached symbol while placing, otherwise the current selection.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && wireAnchorRef.current) { wireAnchorRef.current = null; draw(); }
+      if (e.key === 'Escape' && wireAnchorRef.current) { wireAnchorRef.current = null; draw(); return; }
+
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      const k = e.key.toLowerCase();
+      const op: TransformOp | null = k === 'r' ? 'rotateCCW' : k === 'x' ? 'mirrorX' : k === 'y' ? 'mirrorY' : null;
+      if (!op) return;
+
+      if (activeTool === 'placeSymbol' && placeLib) {
+        // Advance the attached symbol's orientation in place.
+        const o = placeOrientRef.current;
+        placeOrientRef.current = op === 'rotateCCW' ? rotateOrientation(o)
+          : op === 'mirrorX' ? mirrorOrientation(o, 'x') : mirrorOrientation(o, 'y');
+        e.preventDefault();
+        draw();
+      } else if (selection.size > 0) {
+        e.preventDefault();
+        onCommand(transformItems(selection, op));
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [draw]);
+  }, [draw, activeTool, placeLib, selection, onCommand]);
 
   const cursor = activeTool === 'select' ? 'default' : 'crosshair';
 
