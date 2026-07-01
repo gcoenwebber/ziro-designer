@@ -63,6 +63,8 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
   const [selFilter, setSelFilter] = useState<Set<string>>(new Set(FILTER_CATS.map((c) => c[0])));
   const [cursor, setCursor] = useState<Vec2 | null>(null);
   const [scale, setScale] = useState(1);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
 
   const libById = useMemo<Map<string, LibSymbol>>(
@@ -119,6 +121,34 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
   const undo = useCallback(() => setDoc((d) => (d ? history.current.undo(d) ?? d : d)), []);
   const redo = useCallback(() => setDoc((d) => (d ? history.current.redo(d) ?? d : d)), []);
 
+  // Load a schematic from raw .kicad_sch text: parse (lossless), fresh history,
+  // clear transient state, and fit the view. Embedded lib_symbols render as-is.
+  const loadText = useCallback((text: string, name?: string) => {
+    try {
+      const next = readSchematic(parse(text));
+      history.current.clear();
+      setDoc(next);
+      setSelection(new Set());
+      setHighlightItem(null);
+      setPendingLabel(null);
+      setActiveTool('select');
+      setPlaceLib(null);
+      if (name) setFileName(name);
+      setError(null);
+      // Fit after React commits the new doc to the canvas.
+      requestAnimationFrame(() => controller.current?.zoomToFit());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const openFile = useCallback((file: File) => {
+    if (!/\.kicad_sch$/i.test(file.name)) { setError(`Not a .kicad_sch file: ${file.name}`); return; }
+    file.text().then((t) => loadText(t, file.name)).catch((e) => setError(String(e)));
+  }, [loadText]);
+
+  const promptOpen = useCallback(() => fileInputRef.current?.click(), []);
+
   const save = useCallback(() => {
     setDoc((d) => {
       if (!d) return d;
@@ -126,12 +156,12 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
       const url = URL.createObjectURL(new Blob([text], { type: 'application/octet-stream' }));
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${d.titleBlock?.title ?? 'schematic'}.kicad_sch`;
+      a.download = fileName ?? `${d.titleBlock?.title ?? 'schematic'}.kicad_sch`;
       a.click();
       URL.revokeObjectURL(url);
       return d;
     });
-  }, []);
+  }, [fileName]);
 
   const lineMode: LineMode = toggles.has('lineModeFree') ? 'free' : toggles.has('lineMode45') ? '45' : '90';
 
@@ -150,9 +180,10 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
     else if (id === 'zoomOut') controller.current?.zoomOut();
     else if (id === 'undo') undo();
     else if (id === 'redo') redo();
+    else if (id === 'open') promptOpen();
     else if (id === 'save') save();
     else if (TX[id]) setSelection((sel) => { if (sel.size > 0) runCommand(transformItems(sel, TX[id]!)); return sel; });
-  }, [undo, redo, save, runCommand]);
+  }, [undo, redo, save, promptOpen, runCommand]);
 
   const menus = useMemo(() => buildMenus({ tool: onToolSelect, action: onTopAction }), [onToolSelect, onTopAction]);
 
@@ -172,6 +203,9 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         save();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        promptOpen();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         if (e.shiftKey) redo(); else undo();
@@ -196,7 +230,7 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo, save, selection, runCommand, activeTool, onToolSelect, pendingLabel]);
+  }, [undo, redo, save, promptOpen, selection, runCommand, activeTool, onToolSelect, pendingLabel]);
 
   const units = toggles.has('unitsInches') ? 'in' : toggles.has('unitsMils') ? 'mils' : 'mm';
   const fmt = (iu: number): string => {
@@ -207,13 +241,36 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
   };
   const zoomPct = Math.round((scale * 10000 * dpr) / PX_PER_MM_100 * 100);
 
-  if (error) return <pre style={{ color: 'crimson', padding: 16 }}>Failed to load schematic: {error}</pre>;
-  if (!doc) return <div style={{ padding: 16 }}>Loading…</div>;
+  // A load failure before any document exists is fatal; once a document is open,
+  // a bad Open just shows a dismissible banner and leaves the current sheet intact.
+  if (!doc) {
+    return error
+      ? <pre style={{ color: 'crimson', padding: 16 }}>Failed to load schematic: {error}</pre>
+      : <div style={{ padding: 16 }}>Loading…</div>;
+  }
 
-  const title = doc.titleBlock?.title ?? 'Root';
+  const title = fileName ?? doc.titleBlock?.title ?? 'Root';
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (file) openFile(file);
+  };
 
   return (
-    <div className="ze-app">
+    <div className="ze-app" onDrop={onDrop} onDragOver={(e) => e.preventDefault()}>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".kicad_sch"
+        style={{ display: 'none' }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) openFile(f); e.target.value = ''; }}
+      />
+      {error && (
+        <div className="ze-error-banner" onClick={() => setError(null)} title="Dismiss">
+          Couldn’t open file: {error} — click to dismiss
+        </div>
+      )}
       <MenuBar
         menus={menus}
         leftSlot={<div className="ze-home-link" onClick={onExitToHome} title="Back to project manager">⌂ ZiroEDA</div>}
