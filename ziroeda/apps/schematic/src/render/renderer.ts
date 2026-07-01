@@ -78,32 +78,38 @@ export function renderSchematic(
 
   drawGrid(ctx, viewport, theme, canvasWidth, canvasHeight);
 
-  // Highlighted net: draw a bright translucent halo under the wires (KiCad's
-  // net-highlight overlay) before the wires themselves.
+  const hl = (id: string): boolean => highlight !== undefined && highlight.has(id);
+
+  // Highlighted net: KiCad draws a translucent LAYER_BRIGHTENED (magenta) shadow
+  // halo behind the net's items, wider than the wire, then recolours the items
+  // themselves to the brightened colour (getRenderColor with IsBrightened()).
   if (highlight && highlight.size > 0) {
-    ctx.strokeStyle = theme.netHighlight;
+    ctx.strokeStyle = 'rgba(255, 0, 255, 0.25)';
     sch.lines.forEach((line, i) => {
-      if (!highlight.has(refId('line', line.uuid, i))) return;
-      ctx.lineWidth = (line.kind === 'bus' ? 0.9 : 0.7) * MM;
+      if (!hl(refId('line', line.uuid, i))) return;
+      const base = line.stroke && line.stroke.width > 0 ? line.stroke.width : DEFAULT_LINE_WIDTH;
+      ctx.lineWidth = base + 0.4 * MM;
       strokeLine(ctx, line.start, line.end);
     });
   }
 
-  // Wires and buses.
-  for (const line of sch.lines) {
-    ctx.strokeStyle = line.kind === 'bus' ? theme.bus : line.kind === 'wire' ? theme.wire : theme.symbolOutline;
+  // Wires and buses (highlighted ones recoloured to the brightened colour).
+  sch.lines.forEach((line, i) => {
+    const on = hl(refId('line', line.uuid, i));
+    ctx.strokeStyle = on ? theme.netHighlight
+      : line.kind === 'bus' ? theme.bus : line.kind === 'wire' ? theme.wire : theme.symbolOutline;
     ctx.lineWidth = line.stroke && line.stroke.width > 0 ? line.stroke.width : DEFAULT_LINE_WIDTH;
     strokeLine(ctx, line.start, line.end);
-  }
+  });
 
-  // Junctions.
-  ctx.fillStyle = theme.junction;
-  for (const j of sch.junctions) {
+  // Junctions (recoloured when on the highlighted net).
+  sch.junctions.forEach((j, i) => {
+    ctx.fillStyle = hl(refId('junction', j.uuid, i)) ? theme.netHighlight : theme.junction;
     const d = j.diameter > 0 ? j.diameter : 0.9 * MM;
     ctx.beginPath();
     ctx.arc(j.at.x, j.at.y, d / 2, 0, Math.PI * 2);
     ctx.fill();
-  }
+  });
 
   // Placed symbols.
   for (const sym of sch.symbols) {
