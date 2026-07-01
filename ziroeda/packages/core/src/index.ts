@@ -62,6 +62,9 @@ export {
   makeLabel,
   makeSymbol,
   transformItems,
+  collectAnchors,
+  selectionAnchors,
+  nearestAnchor,
   type TransformOp,
 } from './edit/index.js';
 

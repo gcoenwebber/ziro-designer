@@ -1,7 +1,8 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState, useCallback } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, useCallback, useMemo } from 'react';
 import {
   hitTest, planMove, moveWithConnections, orthoMove, addItems, deleteByIds, placeSymbol,
   makeWire, makeBus, makeJunction, makeLabel, needsJunction, rotateOrientation, mirrorOrientation, transformItems,
+  collectAnchors, selectionAnchors, nearestAnchor,
   type MoveSpec, type EditCommand, type Schematic, type LibSymbol, type Vec2, type Orientation, type TransformOp, type LabelKind, type LabelShape,
 } from '@ziroeda/core';
 import { renderSchematic, fitToContent, type Viewport } from '../render/renderer.js';
@@ -82,6 +83,10 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
   const moveStartRef = useRef<Vec2 | null>(null);
   const moveDeltaRef = useRef<Vec2 | null>(null);
   const moveSpecRef = useRef<MoveSpec | null>(null);
+  // Connectable snapping during a move: the moved items' own connection points and the
+  // anchors of everything else, so a dragged pin/wire-end snaps onto a matching anchor.
+  const movePointsRef = useRef<Vec2[]>([]);
+  const moveAnchorsRef = useRef<Vec2[]>([]);
 
   // Wire-drawing state.
   const wireAnchorRef = useRef<Vec2 | null>(null);
@@ -90,6 +95,24 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
   const placeOrientRef = useRef<Orientation>({ angle: 0 });
 
   const dpr = () => window.devicePixelRatio || 1;
+
+  // Connectable anchors (pins/wire-ends/junctions/labels) for cursor snapping, à la
+  // KiCad's BestSnapAnchor with GRID_CONNECTABLE.
+  const anchors = useMemo(() => collectAnchors(schematic, libById), [schematic, libById]);
+  /** Snap a world point to the nearest connection anchor within ~10px, else to the grid. */
+  const snapConn = useCallback((world: Vec2): Vec2 => {
+    const vp = viewportRef.current;
+    const maxDist = vp && vp.scale > 0 ? 10 / vp.scale : GRID / 2;
+    return nearestAnchor(world, anchors, maxDist) ?? snap(world);
+  }, [anchors]);
+  /** Wire endpoint: a nearby connectable anchor if any, else the line-mode-constrained grid point. */
+  const wireEndPoint = useCallback((start: Vec2 | null, cur: Vec2): Vec2 => {
+    const vp = viewportRef.current;
+    const maxDist = vp && vp.scale > 0 ? 10 / vp.scale : GRID / 2;
+    const a = nearestAnchor(cur, anchors, maxDist);
+    if (a) return a;
+    return start ? constrain(start, snap(cur), lineMode) : snap(cur);
+  }, [anchors, lineMode]);
 
   // In H/V line mode, moves keep connected wires orthogonal (adding 90° bends);
   // in free/45 mode the connected wire simply stretches.
@@ -124,7 +147,7 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
     const anchor = wireAnchorRef.current;
     const cur = cursorRef.current;
     if ((activeTool === 'drawWire' || activeTool === 'drawBus') && anchor && cur) {
-      const end = constrain(anchor, snap(cur), lineMode);
+      const end = wireEndPoint(anchor, cur);
       ctx.setTransform(vp.scale, 0, 0, vp.scale, vp.offsetX, vp.offsetY);
       ctx.strokeStyle = activeTool === 'drawBus' ? KICAD_CLASSIC.bus : KICAD_CLASSIC.wire;
       ctx.lineWidth = (activeTool === 'drawBus' ? 0.3048 : 0.1524) * GRID / 1.27; // bus ~12 mil, wire ~6 mil
@@ -134,7 +157,7 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       ctx.stroke();
     }
     onScaleChange?.(vp.scale);
-  }, [schematic, selection, activeTool, lineMode, placeLib, pendingLabel, highlight, buildMove, onScaleChange]);
+  }, [schematic, selection, activeTool, lineMode, placeLib, pendingLabel, highlight, wireEndPoint, buildMove, onScaleChange]);
 
   const zoomAbout = useCallback((px: number, py: number, factor: number) => {
     const vp = viewportRef.current;
@@ -211,11 +234,10 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
 
     if (activeTool === 'drawWire' || activeTool === 'drawBus') {
       const bus = activeTool === 'drawBus';
-      const pt = snap(world);
       const anchor = wireAnchorRef.current;
-      if (!anchor) { wireAnchorRef.current = pt; }
+      if (!anchor) { wireAnchorRef.current = wireEndPoint(null, world); } // start snaps to a pin/anchor
       else {
-        const end = constrain(anchor, pt, lineMode);
+        const end = wireEndPoint(anchor, world);
         if (end.x !== anchor.x || end.y !== anchor.y) {
           commitWireSegment(anchor, end, bus);
           wireAnchorRef.current = end; // continue the chain
@@ -226,7 +248,7 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
     }
 
     if (activeTool === 'junction') {
-      onCommand(addItems({ junctions: [makeJunction(snap(world))] }));
+      onCommand(addItems({ junctions: [makeJunction(snapConn(world))] }));
       return;
     }
 
@@ -266,12 +288,14 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       moveStartRef.current = world;
       moveDeltaRef.current = { x: 0, y: 0 };
       moveSpecRef.current = planMove(schematic, libById, effSel);
+      movePointsRef.current = selectionAnchors(schematic, libById, effSel);
+      moveAnchorsRef.current = collectAnchors(schematic, libById, effSel);
     } else {
       modeRef.current = 'pan';
       panLastRef.current = { x: e.clientX, y: e.clientY };
       panMovedRef.current = false;
     }
-  }, [activeTool, lineMode, placeLib, pendingLabel, schematic, libById, selection, onSelect, onCommand, commitWireSegment, draw]);
+  }, [activeTool, lineMode, placeLib, pendingLabel, schematic, libById, selection, onSelect, onCommand, commitWireSegment, wireEndPoint, snapConn, draw]);
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     const vp = viewportRef.current;
@@ -292,7 +316,21 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
     }
     if (modeRef.current === 'move' && moveStartRef.current) {
       const raw = { x: world.x - moveStartRef.current.x, y: world.y - moveStartRef.current.y };
-      moveDeltaRef.current = { x: Math.round(raw.x / GRID) * GRID, y: Math.round(raw.y / GRID) * GRID };
+      let delta = { x: Math.round(raw.x / GRID) * GRID, y: Math.round(raw.y / GRID) * GRID };
+      // Connectable snap: if a moved connection point lands near a fixed anchor, snap
+      // the whole move so it coincides exactly (KiCad drags snap to connection points).
+      const maxDist = vp.scale > 0 ? 10 / vp.scale : GRID / 2;
+      let bestD = maxDist * maxDist;
+      let bestDelta: Vec2 | null = null;
+      for (const mp of movePointsRef.current) {
+        const cand = { x: mp.x + delta.x, y: mp.y + delta.y };
+        const a = nearestAnchor(cand, moveAnchorsRef.current, maxDist);
+        if (!a) continue;
+        const dx = a.x - cand.x, dy = a.y - cand.y, d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; bestDelta = { x: delta.x + dx, y: delta.y + dy }; }
+      }
+      if (bestDelta) delta = bestDelta;
+      moveDeltaRef.current = delta;
       draw();
     } else if (modeRef.current === 'pan' && panLastRef.current) {
       panMovedRef.current = true;
