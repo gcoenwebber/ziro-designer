@@ -11,6 +11,19 @@ import { KICAD_CLASSIC } from '../theme.js';
 const GRID = 12700; // 1.27 mm (50 mil)
 const snap = (p: Vec2): Vec2 => ({ x: Math.round(p.x / GRID) * GRID, y: Math.round(p.y / GRID) * GRID });
 
+// KiCad's LINE_WIRE cursor (resources/.../cursor-line-wire.xpm): a black crosshair
+// at the hotspot with a green diagonal "wire" running up-right from it. Rebuilt as
+// an SVG cursor; hotspot at (5,26) as in KiCad.
+const WIRE_CURSOR = (() => {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">`
+    + `<line x1="6" y1="25" x2="26" y2="5" stroke="#ffffff" stroke-width="5"/>`
+    + `<line x1="6" y1="25" x2="26" y2="5" stroke="#008000" stroke-width="3"/>`
+    + `<g stroke="#ffffff" stroke-width="3"><line x1="0" y1="26" x2="10" y2="26"/><line x1="5" y1="21" x2="5" y2="31"/></g>`
+    + `<g stroke="#000000" stroke-width="1"><line x1="0" y1="26" x2="10" y2="26"/><line x1="5" y1="21" x2="5" y2="31"/></g>`
+    + `</svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 5 26, crosshair`;
+})();
+
 export type LineMode = 'free' | '90' | '45';
 
 /** Right-toolbar tool ids that place a text label, mapped to the label kind. */
@@ -223,6 +236,9 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       wireAnchorRef.current = null;
     }
     placeOrientRef.current = { angle: 0 };
+    // The wire/bus tools use KiCad's green wire cursor; everything else resets.
+    const canvas = canvasRef.current;
+    if (canvas) canvas.style.cursor = (activeTool === 'drawWire' || activeTool === 'drawBus') ? WIRE_CURSOR : 'default';
   }, [activeTool]);
 
   const toWorld = (clientX: number, clientY: number): Vec2 => {
@@ -328,9 +344,14 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       modeRef.current = 'move';
       moveStartRef.current = world;
       moveDeltaRef.current = { x: 0, y: 0 };
-      moveSpecRef.current = planMove(schematic, libById, effSel);
+      const spec = planMove(schematic, libById, effSel);
+      moveSpecRef.current = spec;
       movePointsRef.current = selectionAnchors(schematic, libById, effSel);
-      moveAnchorsRef.current = collectAnchors(schematic, libById, effSel);
+      // Snap targets are the fixed anchors: exclude the selection AND the wires that
+      // rubber-band with it (spec.wireStart/wireEnd), so a moved point never snaps
+      // back onto a wire that is moving with it.
+      const moving = new Set([...effSel, ...spec.wireStart, ...spec.wireEnd]);
+      moveAnchorsRef.current = collectAnchors(schematic, libById, moving);
     } else {
       modeRef.current = 'pan';
       panLastRef.current = { x: e.clientX, y: e.clientY };
@@ -349,7 +370,7 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
     // the cursor to LINE_WIRE to signal that clicking will start a wire).
     const canvas = canvasRef.current;
     if (canvas && activeTool === 'select' && modeRef.current === 'idle')
-      canvas.style.cursor = danglingPinAt(world) ? 'crosshair' : 'default';
+      canvas.style.cursor = danglingPinAt(world) ? WIRE_CURSOR : 'default';
 
     if (pendingLabel) { draw(); return; } // update the attached label ghost
 

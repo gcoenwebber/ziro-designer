@@ -29,13 +29,28 @@ describe('mergeColinearWires (KiCad SchematicCleanUp / MergeOverlap)', () => {
     expect(xs).toEqual([mmToIU(0), mmToIU(25)]);
   });
 
-  it('does NOT merge two touching wires when a junction sits at the touch point', () => {
+  it('removes a non-explicit junction on two collinear wires and merges them (KiCad CleanUp)', () => {
+    // KiCad AnalyzePoint: two collinear wires have only 2 exit angles, so the point
+    // is not an explicit junction -> CleanUp deletes the dot and merges the wires.
     const sch = addItems({
       lines: [makeWire(at(0, 0), at(10, 0)), makeWire(at(10, 0), at(20, 0))],
       junctions: [makeJunction(at(10, 0))],
     }).apply(EMPTY());
     const merged = mergeColinearWires(sch);
-    expect(merged.lines.length).toBe(2);
+    expect(merged.lines.length).toBe(1);
+    expect(merged.junctions.length).toBe(0);
+  });
+
+  it('keeps a junction and splits wires where a third wire tees in', () => {
+    // A vertical wire ending on the middle of a horizontal wire: the horizontal wire
+    // is split at the tee and a junction dot is added (3 exit angles).
+    const sch = addItems({
+      lines: [makeWire(at(0, 0), at(20, 0)), makeWire(at(10, 0), at(10, 10))],
+    }).apply(EMPTY());
+    const out = mergeColinearWires(sch);
+    // Horizontal split into 0-10 and 10-20, plus the vertical tee = 3 wires.
+    expect(out.lines.length).toBe(3);
+    expect(out.junctions.some((j) => j.at.x === mmToIU(10) && j.at.y === 0)).toBe(true);
   });
 
   it('does NOT merge perpendicular wires meeting at a corner', () => {

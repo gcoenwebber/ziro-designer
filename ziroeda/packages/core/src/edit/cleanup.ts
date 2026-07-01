@@ -14,7 +14,7 @@
  */
 
 import type { Schematic, SchLine, SchJunction, Vec2 } from '../model/types.js';
-import { makeWireWithUuid, makeBus, newUuid } from './build.js';
+import { makeWireWithUuid, makeBus, makeJunction, newUuid } from './build.js';
 import type { EditCommand } from './command.js';
 
 const eq = (a: Vec2, b: Vec2): boolean => a.x === b.x && a.y === b.y;
@@ -124,48 +124,125 @@ function mergedLine(template: SchLine, span: { start: Vec2; end: Vec2 }): SchLin
  * (KiCad's `while( changed )` in CleanUp). Returns a new schematic; unchanged if
  * nothing merged.
  */
+/** Is `p` strictly interior to segment a-b (collinear, between the ends)? */
+function onSegInterior(p: Vec2, a: Vec2, b: Vec2): boolean {
+  if (eq(p, a) || eq(p, b)) return false;
+  if ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) !== 0) return false;
+  const dot = (p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y);
+  const len2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
+  return dot > 0 && dot < len2;
+}
+
+/** Whether a junction dot is needed at `p` given the wires (ignoring existing junctions). */
+function junctionNeeded(lines: readonly SchLine[], p: Vec2): boolean {
+  let ends = 0, interiors = 0;
+  for (const l of lines) {
+    if (l.kind !== 'wire') continue; // buses use separate bus junctions
+    if (eq(l.start, p)) ends++;
+    else if (eq(l.end, p)) ends++;
+    else if (onSegInterior(p, l.start, l.end)) interiors++;
+  }
+  return ends >= 3 || (interiors >= 1 && ends >= 1);
+}
+
+/** True if any junction or third-wire endpoint sits strictly inside span [s,e]. */
+function vertexInside(lines: readonly SchLine[], junctions: readonly SchJunction[], a: SchLine, b: SchLine, s: Vec2, e: Vec2): boolean {
+  for (const j of junctions) if (onSegInterior(j.at, s, e)) return true;
+  for (const l of lines) {
+    if (l === a || l === b) continue;
+    if (onSegInterior(l.start, s, e) || onSegInterior(l.end, s, e)) return true;
+  }
+  return false;
+}
+
+/**
+ * KiCad-faithful wire cleanup after an edit (SCHEMATIC::CleanUp): split wires where
+ * another wire's endpoint lands on their interior (so every connection is
+ * endpoint-to-endpoint), add junction dots where three wires meet or a tee forms,
+ * drop unneeded junctions and zero-length wires, and merge colinear wires that are
+ * not separated by a junction/vertex. Looping to a fixed point keeps connections
+ * intact across repeated moves instead of silently degrading to pass-through.
+ */
 export function mergeColinearWires(sch: Schematic): Schematic {
   let lines: SchLine[] = sch.lines.slice();
+  let junctions: SchJunction[] = sch.junctions.slice();
   let changed = true;
-  let didMerge = false;
+  let any = false;
+  const mark = () => { changed = true; any = true; };
 
   while (changed) {
     changed = false;
-    // Only wires/buses participate.
-    const idx = lines
-      .map((l, i) => ({ l, i }))
-      .filter(({ l }) => l.kind === 'wire' || l.kind === 'bus');
 
-    outer: for (let a = 0; a < idx.length; a++) {
-      const first = idx[a]!.l;
-      for (let b = a + 1; b < idx.length; b++) {
-        const second = idx[b]!.l;
+    // 1. Drop zero-length wires/buses.
+    const zi = lines.findIndex((l) => (l.kind === 'wire' || l.kind === 'bus') && eq(l.start, l.end));
+    if (zi >= 0) { lines.splice(zi, 1); mark(); continue; }
+
+    // 2. Split a wire where another same-layer wire's endpoint is interior to it, so
+    //    tee/cross connections become shared endpoints (KiCad breaks wires at joins).
+    let split = false;
+    for (const w of lines) {
+      if (w.kind !== 'wire' && w.kind !== 'bus') continue;
+      let at: Vec2 | null = null;
+      for (const other of lines) {
+        if (other === w || !sameLayer(w, other)) continue;
+        if (onSegInterior(other.start, w.start, w.end)) { at = other.start; break; }
+        if (onSegInterior(other.end, w.start, w.end)) { at = other.end; break; }
+      }
+      if (at) {
+        lines = lines.filter((l) => l !== w);
+        lines.push(mergedLine(w, { start: w.start, end: at }), mergedLine(w, { start: at, end: w.end }));
+        split = true;
+        break;
+      }
+    }
+    if (split) { mark(); continue; }
+
+    // 3. Junctions: add where needed, remove where no longer needed (auto-managed).
+    const ji = junctions.findIndex((j) => !junctionNeeded(lines, j.at));
+    if (ji >= 0) { junctions.splice(ji, 1); mark(); continue; }
+    const need = new Set(junctions.map((j) => `${j.at.x},${j.at.y}`));
+    let added = false;
+    for (const l of lines) {
+      if (l.kind !== 'wire') continue;
+      for (const p of [l.start, l.end]) {
+        if (!need.has(`${p.x},${p.y}`) && junctionNeeded(lines, p)) {
+          junctions.push(makeJunction(p));
+          need.add(`${p.x},${p.y}`);
+          added = true;
+        }
+      }
+    }
+    if (added) { mark(); continue; }
+
+    // 4. Merge two colinear same-layer wires when nothing (junction/third end) lies
+    //    between them (mergeOverlap already refuses to bridge a junction touch-point).
+    let merged = false;
+    outer: for (let a = 0; a < lines.length; a++) {
+      const first = lines[a]!;
+      if (first.kind !== 'wire' && first.kind !== 'bus') continue;
+      for (let b = a + 1; b < lines.length; b++) {
+        const second = lines[b]!;
+        if (second.kind !== 'wire' && second.kind !== 'bus') continue;
         if (!sameLayer(first, second) || !strokeEquivalent(first, second)) continue;
 
-        // Remove an exact duplicate outright.
         const dup = (eq(first.start, second.start) && eq(first.end, second.end))
           || (eq(first.start, second.end) && eq(first.end, second.start));
-        if (dup) {
-          lines = lines.filter((l) => l !== second);
-          changed = true;
-          didMerge = true;
-          break outer;
-        }
+        if (dup) { lines.splice(b, 1); merged = true; break outer; }
 
-        const span = mergeOverlap(first, second, sch.junctions, true);
-        if (span) {
-          const merged = mergedLine(first, span);
+        const span = mergeOverlap(first, second, junctions, true);
+        if (span && !vertexInside(lines, junctions, first, second, span.start, span.end)) {
+          const m = mergedLine(first, span);
           lines = lines.filter((l) => l !== first && l !== second);
-          lines.push(merged);
-          changed = true;
-          didMerge = true;
+          lines.push(m);
+          merged = true;
           break outer;
         }
       }
     }
+    if (merged) { mark(); continue; }
   }
 
-  return didMerge ? { ...sch, lines } : sch;
+  return any ? { ...sch, lines, junctions } : sch;
 }
 
 /**

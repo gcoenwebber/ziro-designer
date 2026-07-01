@@ -190,7 +190,9 @@ export function renderSchematic(
   }
 }
 
-const TARGET_PIN_RADIUS = 15 * 0.0254 * MM; // 15 mil, KiCad TARGET_PIN_RADIUS
+// KiCad's TARGET_PIN_RADIUS is 15 mil, but that reads visually large here; use a
+// smaller target that matches the desktop app's on-screen appearance.
+const TARGET_PIN_RADIUS = 0.3 * MM; // ~11.8 mil radius
 
 /** KiCad COLOR4D::Brightened(f): move the colour a fraction f toward white. */
 function brighten(hex: string, f: number): string {
