@@ -342,8 +342,13 @@ function spinRotate(p: Vec2, spin: number): Vec2 {
 function drawLabel(ctx: CanvasRenderingContext2D, l: SchLabel, theme: Theme, shadow?: { color: string; width: number }): void {
   const h = l.effects?.fontSize?.[0] ?? 1.27 * MM;
   const spin = labelSpin(l.angle, l.effects?.justify);
+  // Free text uses its own font colour when set, else the notes-layer blue
+  // (LAYER_NOTES, rgb(0,0,194) in KiCad's default theme) — not the label black.
   const color = shadow ? shadow.color
-    : l.kind === 'global_label' ? theme.globalLabel : l.kind === 'hierarchical_label' ? theme.hierLabel : theme.label;
+    : l.kind === 'global_label' ? theme.globalLabel
+    : l.kind === 'hierarchical_label' ? theme.hierLabel
+    : l.kind === 'text' ? (l.effects?.color ? cssColor(l.effects.color) : theme.noText)
+    : theme.label;
   const dist = h * 0.26; // ~ text offset + pen, to lift text off the wire
   // Reading direction unit vector for the spin style (where the text flows).
   const flow = spin === SPIN.LEFT ? { x: -1, y: 0 } : spin === SPIN.RIGHT ? { x: 1, y: 0 }
@@ -394,7 +399,7 @@ function drawLabel(ctx: CanvasRenderingContext2D, l: SchLabel, theme: Theme, sha
     strokeLine(ctx, from, to);
     return;
   }
-  drawText(ctx, l.text, anchor, h, color, justifyFor(spin));
+  drawText(ctx, l.text, anchor, h, color, justifyFor(spin), 0, l.effects?.bold ?? false);
 }
 
 
@@ -575,13 +580,18 @@ function drawLibUnit(
   }
 
   // Pins.
-  const NUM = 1.27 * MM, NAME = 1.27 * MM, MARGIN = 0.25 * MM;
-  // External pin decoration radius = number text size / 2 (KiCad externalPinDecoSize).
-  const DECO_R = NUM / 2;
+  const DEFAULT_TEXT = 1.27 * MM, MARGIN = 0.25 * MM;
   let pinIndex = pinIndexStart;
   for (const pin of unit.pins) {
     const idx = pinIndex++;
     if (pin.hidden) continue;
+    // Per-pin text sizes; a stored size of 0 means "not drawn" (KiCad lays the text
+    // out at zero height — Altium imports hide pin names this way and put graphic
+    // text in the body instead).
+    const NUM = pin.numberSize ?? DEFAULT_TEXT;
+    const NAME = pin.nameSize ?? DEFAULT_TEXT;
+    // External pin decoration radius = number text size / 2 (KiCad externalPinDecoSize).
+    const DECO_R = (NUM > 0 ? NUM : DEFAULT_TEXT) / 2;
     const endLocal = pinBodyEnd(pin.at, pin.angle, pin.length);
     const a = localToWorld(origin, t, pin.at); // connection point (tip)
     const b = localToWorld(origin, t, endLocal); // body end (root)
@@ -617,7 +627,7 @@ function drawLibUnit(
     const horiz = dir.y === 0;
 
     // Pin number: centred over the pin line, offset to one side.
-    if (!pins.numbersHidden && pin.number && pin.number !== '~') {
+    if (!pins.numbersHidden && NUM > 0 && pin.number && pin.number !== '~') {
       const mid = { x: (pin.at.x + endLocal.x) / 2, y: (pin.at.y + endLocal.y) / 2 };
       const off = NUM / 2 + MARGIN;
       const anchor = localToWorld(origin, t, horiz ? { x: mid.x, y: mid.y - off } : { x: mid.x - off, y: mid.y });
@@ -625,7 +635,7 @@ function drawLibUnit(
     }
 
     // Pin name: inside the body at the inner end (offset > 0), else just outside.
-    if (!pins.namesHidden && pin.name && pin.name !== '~') {
+    if (!pins.namesHidden && NAME > 0 && pin.name && pin.name !== '~') {
       if (pins.nameOffset > 0) {
         const anchor = localToWorld(origin, t, { x: endLocal.x + dir.x * pins.nameOffset, y: endLocal.y + dir.y * pins.nameOffset });
         const justify = horiz ? [dir.x > 0 ? 'left' : 'right'] : ['left'];
@@ -701,6 +711,7 @@ function drawText(
   color: string,
   justify?: readonly string[],
   angleDeg = 0,
+  bold = false,
 ): void {
   if (text === '' || text === '~') return;
 
@@ -740,7 +751,8 @@ function drawText(
   const place = (p: Vec2): Vec2 => placeAt(p.x + offX, p.y + offY);
 
   ctx.strokeStyle = color;
-  ctx.lineWidth = Math.max(heightIU * 0.11, DEFAULT_LINE_WIDTH * 0.6); // ~KiCad default text pen
+  // KiCad text pen: default ~size/8 clamped; bold = size/5 (GetPenSizeForBold).
+  ctx.lineWidth = bold ? heightIU / 5 : Math.max(heightIU * 0.11, DEFAULT_LINE_WIDTH * 0.6);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   for (const stroke of strokes) {

@@ -45,6 +45,6 @@ export const KICAD_CLASSIC: Theme = {
   hierLabel: '#840084', // magenta
   netHighlight: '#ff00ff', // KiCad LAYER_BRIGHTENED (pure magenta) net highlight
   selectionShadow: 'rgba(102, 178, 255, 0.8)', // KiCad LAYER_SELECTION_SHADOWS = COLOR4D(.4,.7,1.0,0.8)
-  noteLine: '#0000c4', // KiCad LAYER_NOTES (graphic lines without an explicit colour)
-  noText: '#0000c4',
+  noteLine: '#0000c2', // KiCad LAYER_NOTES rgb(0,0,194) (graphic lines without an explicit colour)
+  noText: '#0000c2', // KiCad LAYER_NOTES rgb(0,0,194)
 };

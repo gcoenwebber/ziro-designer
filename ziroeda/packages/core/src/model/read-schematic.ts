@@ -88,11 +88,23 @@ function readEffects(node: SList): TextEffects | undefined {
   const font = childNamed(e, 'font');
   const size = font ? childNamed(font, 'size') : undefined;
   const justify = childNamed(e, 'justify');
+  // hide is a bare `hide` token in older files or `(hide yes)` in newer ones.
+  const bareHidden = e.items.some((it) => it.kind === 'atom' && it.value === 'hide');
   const effects: { -readonly [K in keyof TextEffects]: TextEffects[K] } = {
-    hidden: boolField(e, 'hide', false),
+    hidden: bareHidden || boolField(e, 'hide', false),
   };
   if (size) effects.fontSize = [mmToIU(numArg(size, 0) ?? 0), mmToIU(numArg(size, 1) ?? 0)];
   if (justify) effects.justify = args(justify);
+  if (font) {
+    // bold is a bare token (legacy) or `(bold yes)`.
+    const bareBold = font.items.some((it) => it.kind === 'atom' && it.value === 'bold');
+    if (bareBold || boolField(font, 'bold', false)) effects.bold = true;
+    const col = childNamed(font, 'color');
+    if (col) {
+      const r = numArg(col, 0) ?? 0, g = numArg(col, 1) ?? 0, b = numArg(col, 2) ?? 0, a = numArg(col, 3) ?? 1;
+      if (r || g || b || a < 1) effects.color = [r, g, b, a];
+    }
+  }
   return effects;
 }
 
@@ -124,7 +136,7 @@ function readLibPin(node: SList, invertY = false): LibPin {
   // hide can be a bare `hide` token (legacy) or `(hide yes)`.
   const hideChild = childNamed(node, 'hide');
   const bareHide = node.items.some((it) => it.kind === 'atom' && it.value === 'hide');
-  return {
+  const pin: { -readonly [K in keyof LibPin]: LibPin[K] } = {
     electricalType: arg(node, 0) ?? 'unspecified',
     shape: arg(node, 1) ?? 'line',
     at,
@@ -135,6 +147,13 @@ function readLibPin(node: SList, invertY = false): LibPin {
     hidden: bareHide || (hideChild ? boolField(node, 'hide', false) : false),
     source: node,
   };
+  // Per-pin name/number text sizes. A size of 0 means the text is not drawn
+  // (KiCad lays it out zero-height; Altium imports hide names this way).
+  const nameFx = childNamed(node, 'name') && readEffects(childNamed(node, 'name')!);
+  const numFx = childNamed(node, 'number') && readEffects(childNamed(node, 'number')!);
+  if (nameFx?.fontSize) pin.nameSize = nameFx.fontSize[0];
+  if (numFx?.fontSize) pin.numberSize = numFx.fontSize[0];
+  return pin;
 }
 
 function readGraphic(node: SList, invertY = false): LibGraphic | undefined {

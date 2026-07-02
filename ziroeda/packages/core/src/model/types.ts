@@ -43,6 +43,10 @@ export interface TextEffects {
   readonly fontSize?: readonly [number, number];
   /** Horizontal/vertical justification tokens, e.g. ['left','bottom']. */
   readonly justify?: readonly string[];
+  /** Bold face (KiCad `(font ... bold)`): drawn with a heavier pen (size/5). */
+  readonly bold?: boolean;
+  /** Explicit text colour [r,g,b,a] from `(font ... (color ...))`, if any. */
+  readonly color?: readonly [number, number, number, number];
   readonly hidden: boolean;
 }
 
@@ -62,6 +66,10 @@ export interface LibPin {
   readonly length: number;
   readonly name: string;
   readonly number: string;
+  /** Name text height in IU; 0 hides the name (Altium imports use this), undefined = default. */
+  readonly nameSize?: number;
+  /** Number text height in IU; 0 hides the number, undefined = default. */
+  readonly numberSize?: number;
   readonly hidden: boolean;
   readonly source: SList;
 }
