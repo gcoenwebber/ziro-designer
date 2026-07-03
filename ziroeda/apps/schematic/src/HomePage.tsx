@@ -74,6 +74,7 @@ export function HomePage({ onOpenSchematic, onOpenProject }: {
   onOpenProject?: (files: PickedHomeFile[], startFile?: string) => void;
 }): JSX.Element {
   const dirInputRef = useRef<HTMLInputElement>(null);
+  const filesInputRef = useRef<HTMLInputElement>(null);
   // The picked project's files (shown in the tree until the editor is launched).
   const [picked, setPicked] = useState<PickedHomeFile[] | null>(null);
 
@@ -103,7 +104,10 @@ export function HomePage({ onOpenSchematic, onOpenProject }: {
   // Open Project: KiCad opens the .kicad_pro and pulls in the whole project.
   // A browser cannot read a file's siblings, so the closest equivalent is the
   // directory picker (File System Access API), which grants the project folder
-  // in one gesture; older browsers fall back to the webkitdirectory input.
+  // in one gesture. Chrome refuses that picker for "system" locations — the
+  // Downloads folder, the profile root, Desktop — so anything but a plain user
+  // cancel falls back to the classic webkitdirectory input, which has no such
+  // blocklist. Multi-file selection and folder drag-and-drop cover the rest.
   const openProjectPicker = async (): Promise<void> => {
     const w = window as unknown as { showDirectoryPicker?: () => Promise<AsyncIterable<[string, { kind: string; getFile?: () => Promise<File> }]> & { values: () => AsyncIterable<{ kind: string; name: string; getFile: () => Promise<File> }> }> };
     if (w.showDirectoryPicker) {
@@ -116,11 +120,43 @@ export function HomePage({ onOpenSchematic, onOpenProject }: {
         }
         await ingest(files);
         return;
-      } catch {
-        return; // user cancelled the picker
+      } catch (e) {
+        // AbortError = the user closed the dialog; anything else (blocked
+        // folder, SecurityError, unsupported) gets the fallback input.
+        if ((e as DOMException)?.name === 'AbortError') return;
       }
     }
     dirInputRef.current?.click();
+  };
+
+  // Folder drag-and-drop: walk the dropped directory entries (no blocklist,
+  // works for Downloads/Desktop) and ingest every file found.
+  const onDropProject = async (e: React.DragEvent): Promise<void> => {
+    e.preventDefault();
+    interface Entry { isFile: boolean; isDirectory: boolean; name: string; file: (ok: (f: File) => void, err: (e: unknown) => void) => void; createReader: () => { readEntries: (ok: (b: Entry[]) => void, err: () => void) => void } }
+    const readAll = (dir: Entry): Promise<Entry[]> => new Promise((res) => {
+      const reader = dir.createReader();
+      const all: Entry[] = [];
+      const next = (): void => reader.readEntries((batch) => {
+        if (batch.length === 0) res(all);
+        else { all.push(...batch); next(); }
+      }, () => res(all));
+      next();
+    });
+    const files: { name: string; textOf: () => Promise<string> }[] = [];
+    const walk = async (entry: Entry, depth: number): Promise<void> => {
+      if (entry.isFile) {
+        const file = await new Promise<File>((res, rej) => entry.file(res, rej)).catch(() => null);
+        if (file) files.push({ name: file.name, textOf: () => file.text() });
+      } else if (entry.isDirectory && depth < 3) {
+        for (const child of await readAll(entry)) await walk(child, depth + 1);
+      }
+    };
+    const entries = [...e.dataTransfer.items]
+      .map((i) => i.webkitGetAsEntry() as unknown as Entry | null)
+      .filter((x): x is Entry => !!x);
+    for (const en of entries) await walk(en, 0);
+    await ingest(files);
   };
 
   const proFile = useMemo(() => picked?.find((f) => /\.kicad_pro$/i.test(f.name)) ?? null, [picked]);
@@ -193,6 +229,7 @@ export function HomePage({ onOpenSchematic, onOpenProject }: {
       label: 'File',
       items: [
         { label: 'Open Project…', icon: 'open', action: () => void openProjectPicker(), shortcut: 'Ctrl+O' },
+        { label: 'Select Project Files…', action: () => filesInputRef.current?.click() },
         { sep: true },
         { label: 'Close Project', action: () => setPicked(null), disabled: !picked },
       ],
@@ -216,10 +253,22 @@ export function HomePage({ onOpenSchematic, onOpenProject }: {
         {...{ webkitdirectory: '' }}
         onChange={(e) => { void onPicked(e.target.files); e.target.value = ''; }}
       />
+      <input
+        ref={filesInputRef}
+        type="file"
+        multiple
+        accept=".kicad_pro,.kicad_sch,.kicad_pcb,.kicad_dru,.kicad_prl,.kicad_wks,.kicad_sym,.md,.txt"
+        style={{ display: 'none' }}
+        onChange={(e) => { void onPicked(e.target.files); e.target.value = ''; }}
+      />
 
       <MenuBar menus={menus} />
 
-      <div className="ze-home-body">
+      <div
+        className="ze-home-body"
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => void onDropProject(e)}
+      >
         {/* far-left vertical toolbar */}
         <div className="ze-mgrbar">
           {MGR_TOOLS.map((t, i) =>
@@ -273,14 +322,26 @@ export function HomePage({ onOpenSchematic, onOpenProject }: {
                 ))}
               </>
             ) : (
-              <div
-                className="ze-tree-item"
-                style={{ fontWeight: 600 }}
-                onClick={() => void openProjectPicker()}
-                title="Open a KiCad project (the folder holding the .kicad_pro and its sheets)"
-              >
-                📂 Open KiCad Project…
-              </div>
+              <>
+                <div
+                  className="ze-tree-item"
+                  style={{ fontWeight: 600 }}
+                  onClick={() => void openProjectPicker()}
+                  title="Open a KiCad project (the folder holding the .kicad_pro and its sheets)"
+                >
+                  📂 Open KiCad Project…
+                </div>
+                <div
+                  className="ze-tree-item"
+                  onClick={() => filesInputRef.current?.click()}
+                  title="If the browser blocks the folder (Downloads, Desktop…), select all the project files instead (Ctrl+A in the dialog)"
+                >
+                  🗂 Select Project Files…
+                </div>
+                <div className="ze-tree-item" style={{ opacity: 0.6, cursor: 'default' }}>
+                  …or drag the project folder here
+                </div>
+              </>
             )}
           </div>
         </div>
