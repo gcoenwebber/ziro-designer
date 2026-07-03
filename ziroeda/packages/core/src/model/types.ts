@@ -255,4 +255,6 @@ export interface Schematic {
   readonly sheets: readonly SchSheet[];
   /** The root AST node, retained as the lossless source of truth. */
   readonly source: SList;
+  /** Display filename (app metadata set on load; not part of the file format). */
+  readonly fileName?: string;
 }

@@ -38,6 +38,67 @@ function inView(minX: number, minY: number, maxX: number, maxY: number): boolean
   return maxX >= g_minX && minX <= g_maxX && maxY >= g_minY && minY <= g_maxY;
 }
 
+// Per-document cache of symbol field layouts (shown text, bounding box, draw
+// rotation): SCH_FIELD::GetBoundingBox costs a text measure + transform per
+// field, far too much to redo on every pan frame of a dense sheet.
+interface FieldDraw {
+  key: string;
+  shown: string;
+  centre: Vec2;
+  minX: number; minY: number; maxX: number; maxY: number;
+  h: number;
+  rot: 0 | 90;
+  bold: boolean;
+  italic: boolean;
+  cssColor?: string;
+}
+let g_fieldSch: Schematic | null = null;
+let g_fieldDraws: FieldDraw[][] = [];
+
+// Symbol body boxes are likewise cached per document: symbolBodyBBox walks every
+// graphic of every unit through the placement transform.
+let g_bboxSch: Schematic | null = null;
+let g_bboxes: BBox[] = [];
+
+function bodyBoxesFor(sch: Schematic, libById: Map<string, LibSymbol>): BBox[] {
+  if (sch !== g_bboxSch) {
+    g_bboxSch = sch;
+    g_bboxes = sch.symbols.map((sym) => symbolBodyBBox(sym, libById.get(sym.libId)));
+  }
+  return g_bboxes;
+}
+
+function fieldDrawsFor(sch: Schematic, libById: Map<string, LibSymbol>): FieldDraw[][] {
+  if (sch === g_fieldSch) return g_fieldDraws;
+  g_fieldSch = sch;
+  g_fieldDraws = sch.symbols.map((sym) => {
+    const lib = libById.get(sym.libId);
+    // A multi-unit Reference gains its unit letter (GetRef(..., true)).
+    const unitCount = lib ? lib.units.reduce((m, u) => Math.max(m, u.unit), 0) : 1;
+    const out: FieldDraw[] = [];
+    for (const f of sym.fields) {
+      if (!f.at || f.effects?.hidden) continue;
+      const shown = fieldShownText(f, sym, unitCount);
+      if (shown === '') continue;
+      const box = fieldBoundingBox(f, sym, shown, measureText);
+      const fd: FieldDraw = {
+        key: f.key,
+        shown,
+        centre: { x: box.x + Math.trunc(box.w / 2), y: box.y + Math.trunc(box.h / 2) },
+        minX: box.x, minY: box.y, maxX: box.x + box.w, maxY: box.y + box.h,
+        h: f.effects?.fontSize?.[0] ?? 1.27 * MM,
+        rot: fieldDrawRotation(f, sym),
+        bold: !!f.effects?.bold,
+        italic: !!f.effects?.italic,
+      };
+      if (f.effects?.color) fd.cssColor = cssColor(f.effects.color);
+      out.push(fd);
+    }
+    return out;
+  });
+  return g_fieldDraws;
+}
+
 // Cache the dangling-pin set by document identity so it isn't recomputed on every
 // pan/zoom (the schematic object is stable between edits).
 let g_dangleSch: Schematic | null = null;
@@ -126,6 +187,7 @@ export function renderSchematic(
   g_maxY = (canvasHeight - offsetY) / scale + cullMargin;
 
   drawGrid(ctx, viewport, theme, canvasWidth, canvasHeight);
+  drawDrawingSheet(ctx, sch, theme);
 
   const hl = (id: string): boolean => highlight !== undefined && highlight.has(id);
 
@@ -227,9 +289,11 @@ export function renderSchematic(
   }
 
   // Placed symbols (culled to the visible rect, including their fields).
+  const fieldDraws = fieldDrawsFor(sch, libById);
+  const bodyBoxes = bodyBoxesFor(sch, libById);
   sch.symbols.forEach((sym, si) => {
     const lib = libById.get(sym.libId);
-    const bb: BBox = symbolBodyBBox(sym, lib);
+    const bb: BBox = bodyBoxes[si]!;
     const bodyVisible = inView(bb.minX, bb.minY, bb.maxX, bb.maxY);
     if (lib && bodyVisible) {
       const t = symbolTransform(sym.angle, sym.mirror);
@@ -241,23 +305,15 @@ export function renderSchematic(
           pinIndex = drawLibUnit(ctx, unit, sym.at, t, theme, pins, symId, pinIndex, highlight, shadowWidth);
       }
     }
-    // Fields are painted exactly as KiCad's SCH_PAINTER::draw(SCH_FIELD): compute
-    // the field's bounding box (text box rotated by the field angle, mapped through
-    // the symbol transform — SCH_FIELD::GetBoundingBox), then stroke the text
-    // CENTER/CENTER at the box centre with the draw rotation (GetDrawRotation).
-    // A multi-unit Reference gains its unit letter (GetRef(..., true)).
-    const unitCount = lib ? lib.units.reduce((m, u) => Math.max(m, u.unit), 0) : 1;
-    for (const f of sym.fields) {
-      if (!f.at || f.effects?.hidden) continue;
-      const shown = fieldShownText(f, sym, unitCount);
-      if (shown === '') continue;
-      const box = fieldBoundingBox(f, sym, shown, measureText);
-      if (!inView(box.x, box.y, box.x + box.w, box.y + box.h)) continue;
-      const h = f.effects?.fontSize?.[0] ?? 1.27 * MM;
-      const color = f.effects?.color ? cssColor(f.effects.color)
-        : f.key === 'Reference' ? theme.reference : f.key === 'Value' ? theme.value : theme.label;
-      const centre = { x: box.x + Math.trunc(box.w / 2), y: box.y + Math.trunc(box.h / 2) };
-      drawText(ctx, shown, centre, h, color, undefined, fieldDrawRotation(f, sym), f.effects?.bold, f.effects?.italic);
+    // Fields are painted exactly as KiCad's SCH_PAINTER::draw(SCH_FIELD): the
+    // field's bounding box (text box rotated by the field angle, mapped through
+    // the symbol transform — SCH_FIELD::GetBoundingBox) is computed once per
+    // document (cached below) and the text is stroked CENTER/CENTER at the box
+    // centre with the draw rotation (GetDrawRotation).
+    for (const fd of fieldDraws[si] ?? []) {
+      if (!inView(fd.minX, fd.minY, fd.maxX, fd.maxY)) continue;
+      const color = fd.cssColor ?? (fd.key === 'Reference' ? theme.reference : fd.key === 'Value' ? theme.value : theme.label);
+      drawText(ctx, fd.shown, fd.centre, fd.h, color, undefined, fd.rot, fd.bold, fd.italic);
     }
   });
 
@@ -453,7 +509,9 @@ function drawLabel(ctx: CanvasRenderingContext2D, l: SchLabel, theme: Theme, sha
     : l.kind === 'hierarchical_label' ? theme.hierLabel
     : l.kind === 'text' ? (l.effects?.color ? cssColor(l.effects.color) : theme.noText)
     : theme.label;
-  const dist = h * 0.26; // ~ text offset + pen, to lift text off the wire
+  // SCH_LABEL_BASE::GetSchematicTextOffset: lift the text clear of the wire by
+  // m_TextOffsetRatio (0.15) x text size plus the pen width (sch_label.cpp).
+  const dist = Math.round(0.15 * h) + DEFAULT_LINE_WIDTH;
   // Reading direction unit vector for the spin style (where the text flows).
   const flow = spin === SPIN.LEFT ? { x: -1, y: 0 } : spin === SPIN.RIGHT ? { x: 1, y: 0 }
     : spin === SPIN.UP ? { x: 0, y: -1 } : { x: 0, y: 1 };
@@ -492,7 +550,23 @@ function drawLabel(ctx: CanvasRenderingContext2D, l: SchLabel, theme: Theme, sha
     return;
   }
 
-  // Local label / free text: text lifted off the wire, flowing in the reading direction.
+  // Free text (SCH_TEXT): drawn exactly at its anchor with its stored
+  // justification and angle — KiCad applies no wire offset to plain text.
+  if (l.kind === 'text') {
+    if (shadow) {
+      const len = Math.max(1, l.text.length) * h * 0.6;
+      strokeLine(ctx, l.at, { x: l.at.x + len, y: l.at.y });
+      return;
+    }
+    drawText(ctx, l.text, l.at, h, color, l.effects?.justify ?? ['left', 'bottom'],
+      (l.angle % 180) === 90 ? 90 : 0, l.effects?.bold ?? false, l.effects?.italic ?? false);
+    return;
+  }
+
+  // Local label: text lifted off the wire perpendicular to it (x for vertical
+  // spins, y for horizontal — sch_label.cpp GetSchematicTextOffset), drawn with
+  // the file's own justification (which carries the 'bottom' that keeps the
+  // glyphs fully clear of the wire) and rotated for vertical spins.
   const perp = spin === SPIN.UP || spin === SPIN.BOTTOM ? { x: -dist, y: 0 } : { x: 0, y: -dist };
   const anchor = { x: l.at.x + perp.x, y: l.at.y + perp.y };
   if (shadow) {
@@ -503,7 +577,10 @@ function drawLabel(ctx: CanvasRenderingContext2D, l: SchLabel, theme: Theme, sha
     strokeLine(ctx, from, to);
     return;
   }
-  drawText(ctx, l.text, anchor, h, color, justifyFor(spin), 0, l.effects?.bold ?? false);
+  const vertical = spin === SPIN.UP || spin === SPIN.BOTTOM;
+  drawText(ctx, l.text, anchor, h, color,
+    l.effects?.justify ?? [...justifyFor(spin), 'bottom'],
+    vertical ? 90 : 0, l.effects?.bold ?? false, l.effects?.italic ?? false);
 }
 
 
@@ -868,31 +945,151 @@ function drawText(
     return;
   }
 
-  // KiCad strokes schematic text with the Newstroke font. Lay the run out with a
-  // baseline-left origin, then place it per the justify flags: cap-height ~= the
-  // text size, letters extend up from the baseline (negative local y).
-  const { strokes, width } = layoutText(text, heightIU);
+  // KiCad strokes schematic text with the Newstroke font. The glyph run is built
+  // once into a Path2D (baseline-left origin, italic shear baked in) and cached
+  // by text+size, then placed per call with a canvas transform — retained paths
+  // make dense sheets (hundreds of labels/pin names) pan smoothly.
+  const { path, width } = textPath(text, heightIU, italic);
   const offX = right ? -width : left ? 0 : -width / 2; // default: centre
   const offY = top ? cap : bottom ? 0 : cap / 2;       // baseline placement; default: middle
-  // Italic: STROKE_GLYPH::Transform shears each point right by y·ITALIC_TILT
-  // (y is negative above the baseline, so tops lean right) — glyph.cpp.
-  const tilt = italic ? ITALIC_TILT : 0;
-  const place = (p: Vec2): Vec2 => placeAt(p.x - p.y * tilt + offX, p.y + offY);
 
+  ctx.save();
+  ctx.translate(at.x, at.y);
+  if (a !== 0) ctx.rotate(-a); // matches placeAt's screen-space rotation
+  ctx.translate(offX, offY);
   ctx.strokeStyle = color;
   // KiCad text pen: default ~size/8 clamped; bold = size/5 (GetPenSizeForBold).
   ctx.lineWidth = bold ? heightIU / 5 : Math.max(heightIU * 0.11, DEFAULT_LINE_WIDTH * 0.6);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  for (const stroke of strokes) {
-    if (stroke.length === 0) continue;
-    ctx.beginPath();
-    const p0 = place(stroke[0]!);
-    ctx.moveTo(p0.x, p0.y);
-    if (stroke.length === 1) ctx.lineTo(p0.x + 0.01, p0.y); // lone point -> tiny dot
-    else for (let i = 1; i < stroke.length; i++) { const p = place(stroke[i]!); ctx.lineTo(p.x, p.y); }
-    ctx.stroke();
+  ctx.stroke(path);
+  ctx.restore();
+}
+
+// Retained glyph runs: text+size+italic -> Path2D at a baseline-left origin.
+// (A crude size cap resets the cache; real sheets stay well under it.)
+const g_textPaths = new Map<string, { path: Path2D; width: number }>();
+
+function textPath(text: string, size: number, italic: boolean): { path: Path2D; width: number } {
+  const key = `${size}|${italic ? 1 : 0}|${text}`;
+  let entry = g_textPaths.get(key);
+  if (!entry) {
+    const { strokes, width } = layoutText(text, size);
+    // Italic: STROKE_GLYPH::Transform shears each point right by y·ITALIC_TILT
+    // (y is negative above the baseline, so tops lean right) — glyph.cpp.
+    const tilt = italic ? ITALIC_TILT : 0;
+    const path = new Path2D();
+    for (const stroke of strokes) {
+      if (stroke.length === 0) continue;
+      const p0 = stroke[0]!;
+      path.moveTo(p0.x - p0.y * tilt, p0.y);
+      if (stroke.length === 1) path.lineTo(p0.x - p0.y * tilt + 0.01, p0.y); // lone point -> dot
+      else for (let i = 1; i < stroke.length; i++) { const pt = stroke[i]!; path.lineTo(pt.x - pt.y * tilt, pt.y); }
+    }
+    if (g_textPaths.size > 6000) g_textPaths.clear();
+    entry = { path, width };
+    g_textPaths.set(key, entry);
   }
+  return entry;
+}
+
+// ----- drawing sheet (page frame + title block) ------------------------------
+//
+// KiCad's default drawing sheet (common/drawing_sheet/
+// drawing_sheet_default_description.cpp): 10 mm margins, a double border 2 mm
+// apart, a coordinate band with 50 mm divisions (numbers across, letters down),
+// and the 110 x 34 mm title block in the bottom-right corner with the
+// title-block variables resolved. Drawn in LAYER_SCHEMATIC_DRAWINGSHEET red.
+
+/** Paper sizes in mm (landscape), from common/page_info.cpp. */
+const PAPER_MM: Record<string, [number, number]> = {
+  A5: [210, 148], A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594], A0: [1189, 841],
+  A: [279.4, 215.9], B: [431.8, 279.4], C: [558.8, 431.8], D: [863.6, 558.8], E: [1117.6, 863.6],
+  USLetter: [279.4, 215.9], USLegal: [355.6, 215.9], USLedger: [431.8, 279.4],
+};
+
+/** Page size for a `(paper ...)` token in IU, or null when unknown/custom. */
+export function paperSizeIU(paper: string | undefined): { w: number; h: number } | null {
+  if (!paper) return null;
+  const parts = paper.split(/\s+/);
+  const dims = PAPER_MM[parts[0]!];
+  if (!dims) return null;
+  const portrait = parts.includes('portrait');
+  const [w, h] = portrait ? [dims[1], dims[0]] : dims;
+  return { w: w! * MM, h: h! * MM };
+}
+
+function drawDrawingSheet(ctx: CanvasRenderingContext2D, sch: Schematic, theme: Theme): void {
+  const page = paperSizeIU(sch.paper);
+  if (!page) return;
+  const M = 10 * MM; // left/right/top/bottom margins
+  const L = M, T = M, R = page.w - M, B = page.h - M;
+  const lw = 0.15 * MM; // default linewidth
+  const color = theme.pageFrame;
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lw;
+  ctx.setLineDash([]);
+
+  // Double border: the margin rect and a second one 2 mm inside.
+  ctx.strokeRect(L, T, R - L, B - T);
+  const i2 = 2 * MM;
+  ctx.strokeRect(L + i2, T + i2, R - L - 2 * i2, B - T - 2 * i2);
+
+  // Coordinate band: ticks every 50 mm with centred numbers (top/bottom) and
+  // letters (left/right) in 1.3 mm text.
+  const refH = 1.3 * MM;
+  const step = 50 * MM;
+  ctx.beginPath();
+  for (let x = L + step; x < R - i2; x += step) {
+    ctx.moveTo(x, T); ctx.lineTo(x, T + i2);
+    ctx.moveTo(x, B); ctx.lineTo(x, B - i2);
+  }
+  for (let y = T + step; y < B - i2; y += step) {
+    ctx.moveTo(L, y); ctx.lineTo(L + i2, y);
+    ctx.moveTo(R, y); ctx.lineTo(R - i2, y);
+  }
+  ctx.stroke();
+  let n = 1;
+  for (let x = L; x < R - i2; x += step, n++) {
+    const cx = Math.min(x + step / 2, (x + R) / 2);
+    drawText(ctx, String(n), { x: cx, y: T + i2 / 2 }, refH, color);
+    drawText(ctx, String(n), { x: cx, y: B - i2 / 2 }, refH, color);
+  }
+  let li = 0;
+  for (let y = T; y < B - i2; y += step, li++) {
+    const cy = Math.min(y + step / 2, (y + B) / 2);
+    const ch = String.fromCharCode(65 + (li % 26));
+    drawText(ctx, ch, { x: L + i2 / 2, y: cy }, refH, color);
+    drawText(ctx, ch, { x: R - i2 / 2, y: cy }, refH, color);
+  }
+
+  // Title block: rect from (110,34) to (2,2) off the bottom-right margin corner,
+  // with the default description's separator lines and variable texts.
+  const rx = (d: number): number => R - d * MM;
+  const ry = (d: number): number => B - d * MM;
+  ctx.strokeRect(rx(110), ry(34), 108 * MM, 32 * MM);
+  ctx.beginPath();
+  for (const yy of [5.5, 8.5, 12.5, 18.5]) { ctx.moveTo(rx(110), ry(yy)); ctx.lineTo(rx(2), ry(yy)); }
+  ctx.moveTo(rx(90), ry(8.5)); ctx.lineTo(rx(90), ry(5.5));
+  ctx.moveTo(rx(26), ry(8.5)); ctx.lineTo(rx(26), ry(2));
+  ctx.stroke();
+
+  const tb = sch.titleBlock;
+  const t15 = 1.5 * MM;
+  const right = ['right'];
+  // (tbtext ... (pos X Y)) positions are right-justified at (R-X, B-Y) by default
+  // description convention (text grows toward the corner origin's opposite side).
+  drawText(ctx, `Date: ${tb?.date ?? ''}`, { x: rx(87), y: ry(6.9) }, t15, color, ['left']);
+  drawText(ctx, 'ZiroEDA', { x: rx(109), y: ry(4.1) }, t15, color, ['left']);
+  drawText(ctx, `Rev: ${tb?.rev ?? ''}`, { x: rx(24), y: ry(6.9) }, t15, color, ['left'], 0, true);
+  drawText(ctx, `Size: ${sch.paper ?? ''}`, { x: rx(109), y: ry(6.9) }, t15, color, ['left']);
+  drawText(ctx, 'Id: 1/1', { x: rx(24), y: ry(4.1) }, t15, color, ['left']);
+  drawText(ctx, `Title: ${tb?.title ?? ''}`, { x: rx(109), y: ry(10.7) }, 2 * MM, color, ['left'], 0, true, true);
+  drawText(ctx, `File: ${sch.fileName ?? ''}`, { x: rx(109), y: ry(14.3) }, t15, color, ['left']);
+  drawText(ctx, 'Sheet: /', { x: rx(109), y: ry(17) }, t15, color, ['left']);
+  drawText(ctx, tb?.company ?? '', { x: rx(109), y: ry(20) }, t15, color, ['left'], 0, true);
+  void right;
 }
 
 function drawGrid(
@@ -983,6 +1180,9 @@ export function fitToContent(sch: Schematic, canvasWidth: number, canvasHeight: 
   for (const s of sch.symbols) { include(s.at); for (const f of s.fields) if (f.at) include(f.at); }
   for (const l of sch.labels) include(l.at);
   for (const sh of sch.sheets) { include(sh.at); include({ x: sh.at.x + sh.size.w, y: sh.at.y + sh.size.h }); }
+  // The drawing sheet is part of the scene: fit shows the whole page (as KiCad does).
+  const page = paperSizeIU(sch.paper);
+  if (page) { include({ x: 0, y: 0 }); include({ x: page.w, y: page.h }); }
 
   if (!Number.isFinite(minX)) return { scale: 0.02, offsetX: canvasWidth / 2, offsetY: canvasHeight / 2 };
 

@@ -209,9 +209,12 @@ describe('field geometry (SCH_FIELD::GetBoundingBox port)', () => {
     const f = mkField(['left']);
     const plain = fieldBoundingBox(f, sym, 'R1', measure);
     const mirrored = fieldBoundingBox(f, mkSym(0, 'y'), 'R1', measure);
-    // Anchor is +2mm right of the symbol; mirror-Y reflects it to -2mm.
-    expect(plain.x).toBe(f.at!.x); // left-justified: box starts at anchor
-    expect(mirrored.x + mirrored.w).toBeLessThan(f.at!.x); // now on the other side
+    // Left-justified: the box grows rightward from the anchor. Mirror-Y flips the
+    // text run around the anchor (the file position is the *transformed* one —
+    // SCH_FIELD::GetPosition), so the box now grows leftward, ending at it.
+    expect(plain.x).toBe(f.at!.x); // box starts at the anchor
+    expect(Math.abs(mirrored.x + mirrored.w - f.at!.x)).toBeLessThan(3000); // ends at the anchor
+    expect(mirrored.x).toBeLessThan(plain.x);
     expect(isHorizJustifyFlipped(f, mkSym(0, 'y'), 'R1', measure)).toBe(true);
     expect(effectiveHorizJustify(f, mkSym(0, 'y'), 'R1', measure)).toBe('right');
     expect(effectiveHorizJustify(f, sym, 'R1', measure)).toBe('left');

@@ -32,6 +32,7 @@ export interface Theme {
   sheetName: string;
   sheetFile: string;
   sheetLabel: string;
+  pageFrame: string;
 }
 
 export const KICAD_CLASSIC: Theme = {
@@ -61,4 +62,5 @@ export const KICAD_CLASSIC: Theme = {
   sheetName: '#006464', // KiCad LAYER_SHEETNAME rgb(0,100,100)
   sheetFile: '#725600', // KiCad LAYER_SHEETFILENAME rgb(114,86,0)
   sheetLabel: '#006464', // KiCad LAYER_SHEETLABEL rgb(0,100,100)
+  pageFrame: '#840000', // KiCad LAYER_SCHEMATIC_DRAWINGSHEET rgb(132,0,0)
 };

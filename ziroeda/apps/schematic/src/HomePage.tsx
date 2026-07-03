@@ -1,4 +1,5 @@
-import { useRef, type JSX } from 'react';
+import { useMemo, useRef, useState, type JSX } from 'react';
+import { MenuBar, type Menu } from './ui/MenuBar.js';
 import './ui/shell.css';
 
 /** A file picked from disk for a project open. */
@@ -30,9 +31,9 @@ const TILES: Tile[] = [
 ];
 
 // KiCad project-manager left toolbar (toolbars_kicad_manager.cpp).
-const MGR_TOOLS: ({ icon: string; title: string } | 'sep')[] = [
+const MGR_TOOLS: ({ icon: string; title: string; action?: 'open' } | 'sep')[] = [
   { icon: 'new_project_from_template', title: 'New Project…' },
-  { icon: 'open_project', title: 'Open Project…' },
+  { icon: 'open_project', title: 'Open Project…', action: 'open' },
   'sep',
   { icon: 'zip', title: 'Archive Project…' },
   { icon: 'unzip', title: 'Unarchive Project…' },
@@ -52,24 +53,75 @@ const TreeIcon = ({ name }: { name: string }): JSX.Element => {
   return url ? <img src={url} alt="" /> : <span style={{ width: 18, height: 18 }} />;
 };
 
+const basename = (p: string): string => p.split('/').pop()!.split('\\').pop()!;
+
+const treeIconFor = (file: string): string =>
+  /\.kicad_pro$/i.test(file) ? 'project_kicad'
+  : /\.kicad_sch$/i.test(file) ? 'icon_eeschema_24'
+  : /\.kicad_sym$/i.test(file) ? 'library'
+  : /\.kicad_pcb$/i.test(file) ? 'icon_pcbnew_24'
+  : 'directory_browser';
+
+/**
+ * KiCad-style project manager: open a project folder, see its files in the
+ * tree, then launch the Schematic Editor on it — the same workflow as the
+ * desktop app's project window. Until a project is opened, the bundled demo
+ * project is shown.
+ */
 export function HomePage({ projectName, onOpenSchematic, onOpenProject }: {
   projectName: string;
   onOpenSchematic: () => void;
   onOpenProject?: (files: PickedHomeFile[]) => void;
 }): JSX.Element {
   const dirInputRef = useRef<HTMLInputElement>(null);
+  // The picked project's files (shown in the tree until the editor is launched).
+  const [picked, setPicked] = useState<PickedHomeFile[] | null>(null);
 
-  // Read every picked file (a folder via webkitdirectory, or a multi-select) and
-  // hand the .kicad_pro / .kicad_sch set to the editor as one project.
+  // Read every picked file; keep the KiCad file types for the tree, hand the
+  // .kicad_pro / .kicad_sch set to the editor when a schematic is launched.
   const onPicked = async (list: FileList | null): Promise<void> => {
     if (!list || list.length === 0) return;
-    const wanted = [...list].filter((f) => /\.(kicad_sch|kicad_pro)$/i.test(f.name));
+    const wanted = [...list].filter((f) => /\.(kicad_sch|kicad_pro|kicad_sym|kicad_pcb|kicad_dru)$/i.test(f.name));
     const files = await Promise.all(wanted.map(async (f) => ({
       name: (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name,
-      text: await f.text(),
+      text: /\.(kicad_sch|kicad_pro)$/i.test(f.name) ? await f.text() : '',
     })));
-    if (files.length > 0) onOpenProject?.(files);
+    if (files.length > 0) setPicked(files);
   };
+
+  const proFile = useMemo(() => picked?.find((f) => /\.kicad_pro$/i.test(f.name)) ?? null, [picked]);
+  const displayName = proFile ? basename(proFile.name).replace(/\.kicad_pro$/i, '') : projectName;
+
+  // Tree order: the .kicad_pro first, then schematics, then the rest.
+  const treeFiles = useMemo(() => {
+    if (!picked) return null;
+    const rank = (n: string): number => (/\.kicad_pro$/i.test(n) ? 0 : /\.kicad_sch$/i.test(n) ? 1 : 2);
+    return [...picked].sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
+  }, [picked]);
+
+  const launchSchematic = (): void => {
+    if (picked && onOpenProject) onOpenProject(picked);
+    else onOpenSchematic();
+  };
+
+  // KiCad's project-manager File menu (the working subset).
+  const menus: Menu[] = [
+    {
+      label: 'File',
+      items: [
+        { label: 'Open Project…', icon: 'open', action: () => dirInputRef.current?.click(), shortcut: 'Ctrl+O' },
+        { label: 'Open Demo Project', action: () => { setPicked(null); onOpenSchematic(); } },
+        { sep: true },
+        { label: 'Close Project', action: () => setPicked(null), disabled: !picked },
+      ],
+    },
+    { label: 'View', items: [{ label: 'Refresh', action: () => {} }] },
+    {
+      label: 'Tools',
+      items: [{ label: 'Edit Schematic', action: launchSchematic, shortcut: 'Ctrl+E' }],
+    },
+    { label: 'Help', items: [{ label: 'About ZiroEDA', action: () => {} }] },
+  ];
 
   return (
     <div className="ze-app">
@@ -82,11 +134,8 @@ export function HomePage({ projectName, onOpenSchematic, onOpenProject }: {
         {...{ webkitdirectory: '' }}
         onChange={(e) => { void onPicked(e.target.files); e.target.value = ''; }}
       />
-      <div className="ze-menubar">
-        {['File', 'Edit', 'View', 'Tools', 'Preferences', 'Help'].map((m) => (
-          <div key={m} className="ze-menu">{m}</div>
-        ))}
-      </div>
+
+      <MenuBar menus={menus} />
 
       <div className="ze-home-body">
         {/* far-left vertical toolbar */}
@@ -99,7 +148,7 @@ export function HomePage({ projectName, onOpenSchematic, onOpenProject }: {
                 key={t.icon}
                 title={t.title}
                 aria-label={t.title}
-                onClick={t.icon === 'open_project' ? () => dirInputRef.current?.click() : undefined}
+                onClick={t.action === 'open' ? () => dirInputRef.current?.click() : undefined}
               >
                 <img src={mgrUrl(t.icon)} alt="" />
               </button>
@@ -111,27 +160,47 @@ export function HomePage({ projectName, onOpenSchematic, onOpenProject }: {
         <div className="ze-panel left" style={{ width: 290 }}>
           <div className="ze-panel-header">Project Files</div>
           <div className="ze-panel-body">
-            <div className="ze-tree-item root active">
-              <span className="twisty">▾</span>
-              <TreeIcon name="project_kicad" />
-              <span>{projectName}.kicad_pro</span>
-            </div>
-            <div className="ze-tree-item" style={{ paddingLeft: 24 }} onClick={onOpenSchematic}>
-              <TreeIcon name="icon_eeschema_24" />
-              <span>{projectName}.kicad_sch</span>
-            </div>
-            <div className="ze-tree-item" style={{ paddingLeft: 24 }}>
-              <TreeIcon name="library" />
-              <span>{projectName}.kicad_sym</span>
-            </div>
-            <div
-              className="ze-tree-item"
-              style={{ marginTop: 12, fontWeight: 600 }}
-              onClick={() => dirInputRef.current?.click()}
-              title="Pick your KiCad project folder (.kicad_pro + all .kicad_sch sheets)"
-            >
-              📂 Open KiCad Project…
-            </div>
+            {treeFiles ? (
+              <>
+                <div className="ze-tree-item root active">
+                  <span className="twisty">▾</span>
+                  <TreeIcon name="project_kicad" />
+                  <span>{displayName}</span>
+                </div>
+                {treeFiles.map((f) => (
+                  <div
+                    key={f.name}
+                    className="ze-tree-item"
+                    style={{ paddingLeft: 24, cursor: /\.kicad_sch$/i.test(f.name) ? 'pointer' : 'default' }}
+                    title={/\.kicad_sch$/i.test(f.name) ? 'Open in the Schematic Editor' : f.name}
+                    onClick={/\.kicad_sch$/i.test(f.name) ? launchSchematic : undefined}
+                  >
+                    <TreeIcon name={treeIconFor(f.name)} />
+                    <span>{basename(f.name)}</span>
+                  </div>
+                ))}
+              </>
+            ) : (
+              <>
+                <div className="ze-tree-item root active">
+                  <span className="twisty">▾</span>
+                  <TreeIcon name="project_kicad" />
+                  <span>{projectName}.kicad_pro</span>
+                </div>
+                <div className="ze-tree-item" style={{ paddingLeft: 24 }} onClick={onOpenSchematic}>
+                  <TreeIcon name="icon_eeschema_24" />
+                  <span>{projectName}.kicad_sch</span>
+                </div>
+                <div
+                  className="ze-tree-item"
+                  style={{ marginTop: 12, fontWeight: 600 }}
+                  onClick={() => dirInputRef.current?.click()}
+                  title="Pick your KiCad project folder (.kicad_pro + all .kicad_sch sheets)"
+                >
+                  📂 Open KiCad Project…
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -143,7 +212,7 @@ export function HomePage({ projectName, onOpenSchematic, onOpenProject }: {
               className="ze-launcher"
               disabled={!t.enabled}
               title={t.desc}
-              onClick={t.enabled ? onOpenSchematic : undefined}
+              onClick={t.enabled ? launchSchematic : undefined}
             >
               <span className="ico">{tileIcon(t.id)}</span>
               <span className="txt">
@@ -157,7 +226,9 @@ export function HomePage({ projectName, onOpenSchematic, onOpenProject }: {
       </div>
 
       <div className="ze-statusbar">
-        <span className="cell grow">Project: ~/projects/{projectName}/{projectName}.kicad_pro</span>
+        <span className="cell grow">
+          Project: {proFile ? proFile.name : `~/projects/${projectName}/${projectName}.kicad_pro`}
+        </span>
       </div>
     </div>
   );

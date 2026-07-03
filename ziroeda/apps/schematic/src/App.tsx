@@ -198,7 +198,7 @@ function SchematicEditor({ onExitToHome, initialProject }: { onExitToHome: () =>
 
   const loadText = useCallback((text: string, name?: string) => {
     try {
-      const next = readSchematic(parse(text));
+      const next = { ...readSchematic(parse(text)), fileName: name ?? 'untitled.kicad_sch' };
       const file = name ?? 'untitled.kicad_sch';
       project.current = { docs: new Map([[file, next]]), root: file };
       histories.current = new Map([[file, new History()]]);
@@ -226,7 +226,7 @@ function SchematicEditor({ onExitToHome, initialProject }: { onExitToHome: () =>
       if (/\.kicad_pro$/i.test(base)) { proName = base; continue; }
       if (!/\.kicad_sch$/i.test(base)) continue;
       try {
-        docs.set(base, readSchematic(parse(f.text)));
+        docs.set(base, { ...readSchematic(parse(f.text)), fileName: base });
       } catch (e) {
         problems.push(`${base}: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -236,6 +236,9 @@ function SchematicEditor({ onExitToHome, initialProject }: { onExitToHome: () =>
       return;
     }
     const root = findRootFile(docs, proName);
+    const wantRoot = proName?.replace(/\.kicad_pro$/i, '.kicad_sch');
+    if (wantRoot && !docs.has(wantRoot))
+      problems.push(`root schematic ${wantRoot} is not in the selection — opened ${root} instead`);
     project.current = { docs, root };
     histories.current = new Map([[root, new History()]]);
     history.current = histories.current.get(root)!;

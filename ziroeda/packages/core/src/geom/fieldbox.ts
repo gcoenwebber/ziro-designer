@@ -94,7 +94,7 @@ export function fieldShownText(field: SchField, sym: SchSymbol, unitCount: numbe
  * EDA_TEXT::GetTextBox for a single-line stroke-font field, anchored at the field
  * position with the *stored* justification, before any rotation/transform.
  */
-export function fieldTextBox(field: SchField, shownText: string, measure: TextMeasurer): Box {
+export function fieldTextBox(field: SchField, shownText: string, measure: TextMeasurer, posOverride?: Vec2): Box {
   const { h, w } = fieldSize(field);
   const bold = !!field.effects?.bold;
   const italic = !!field.effects?.italic;
@@ -106,7 +106,7 @@ export function fieldTextBox(field: SchField, shownText: string, measure: TextMe
   const extentsY = h + 2 * inflate;
 
   const fudge = kiRound(extentsY * 0.17); // stroke-font fudge factor
-  const pos = field.at ?? { x: 0, y: 0 };
+  const pos = posOverride ?? field.at ?? { x: 0, y: 0 };
   const box: Box = { x: pos.x, y: pos.y, w: extentsX, h: extentsY + fudge };
 
   const italicOffset = italic ? kiRound(h * ITALIC_TILT) : 0;
@@ -133,21 +133,34 @@ function rotatePoint(p: Vec2, c: Vec2, angleDeg: number): Vec2 {
   return { x: c.x + kiRound(x * cos + y * sin), y: c.y + kiRound(y * cos - x * sin) };
 }
 
+/** Invert a placement transform (det is always ±1, so this stays integral). */
+function invTransform(t: Transform): Transform {
+  const det = t.x1 * t.y2 - t.y1 * t.x2;
+  return { x1: t.y2 / det, y1: -t.y1 / det, x2: -t.x2 / det, y2: t.x1 / det };
+}
+
 /**
  * SCH_FIELD::GetBoundingBox: the text box rotated by the field angle around the
  * field position and mapped through the parent symbol's transform. This box is in
  * schematic coordinates; the painter draws the text centred inside it.
+ *
+ * The file's `(at ...)` for a symbol field is SCH_FIELD::GetPosition() — the
+ * *transformed* position. KiCad's internal GetTextPos() is the pre-transform
+ * one (GetPosition applies the parent transform, sch_field.cpp), so the box is
+ * built at inverse-transform(at - origin) and mapped forward again.
  */
 export function fieldBoundingBox(field: SchField, sym: SchSymbol, shownText: string, measure: TextMeasurer): Box {
-  const box = fieldTextBox(field, shownText, measure);
   const origin = sym.at;
-  const pos: Vec2 = { x: (field.at?.x ?? 0) - origin.x, y: (field.at?.y ?? 0) - origin.y };
-  let begin: Vec2 = { x: box.x - origin.x, y: box.y - origin.y };
-  let end: Vec2 = { x: box.x + box.w - origin.x, y: box.y + box.h - origin.y };
+  const t: Transform = symbolTransform(sym.angle, sym.mirror);
+  const relFile: Vec2 = { x: (field.at?.x ?? 0) - origin.x, y: (field.at?.y ?? 0) - origin.y };
+  const pos = applyTransform(invTransform(t), relFile); // GetTextPos() - origin
+
+  const box = fieldTextBox(field, shownText, measure, pos);
+  let begin: Vec2 = { x: box.x, y: box.y };
+  let end: Vec2 = { x: box.x + box.w, y: box.y + box.h };
   begin = rotatePoint(begin, pos, field.angle);
   end = rotatePoint(end, pos, field.angle);
 
-  const t: Transform = symbolTransform(sym.angle, sym.mirror);
   begin = applyTransform(t, begin);
   end = applyTransform(t, end);
 
