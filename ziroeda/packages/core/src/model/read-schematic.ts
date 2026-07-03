@@ -96,9 +96,11 @@ function readEffects(node: SList): TextEffects | undefined {
   if (size) effects.fontSize = [mmToIU(numArg(size, 0) ?? 0), mmToIU(numArg(size, 1) ?? 0)];
   if (justify) effects.justify = args(justify);
   if (font) {
-    // bold is a bare token (legacy) or `(bold yes)`.
+    // bold/italic are bare tokens (legacy) or `(bold yes)` / `(italic yes)`.
     const bareBold = font.items.some((it) => it.kind === 'atom' && it.value === 'bold');
     if (bareBold || boolField(font, 'bold', false)) effects.bold = true;
+    const bareItalic = font.items.some((it) => it.kind === 'atom' && it.value === 'italic');
+    if (bareItalic || boolField(font, 'italic', false)) effects.italic = true;
     const col = childNamed(font, 'color');
     if (col) {
       const r = numArg(col, 0) ?? 0, g = numArg(col, 1) ?? 0, b = numArg(col, 2) ?? 0, a = numArg(col, 3) ?? 1;
@@ -108,7 +110,8 @@ function readEffects(node: SList): TextEffects | undefined {
   return effects;
 }
 
-function readField(node: SList, invertY = false): SchField {
+/** Parse a `(property ...)` node. Exported so the writer can diff edits against the source. */
+export function readField(node: SList, invertY = false): SchField {
   const { at, angle } = readAt(node, invertY);
   const field: { -readonly [K in keyof SchField]: SchField[K] } = {
     key: arg(node, 0) ?? '',
@@ -119,6 +122,7 @@ function readField(node: SList, invertY = false): SchField {
   if (childNamed(node, 'at')) field.at = at;
   const effects = readEffects(node);
   if (effects) field.effects = effects;
+  if (boolField(node, 'show_name', false)) field.nameShown = true;
   return field;
 }
 
@@ -320,6 +324,8 @@ function readSymbol(node: SList): SchSymbol {
     source: node,
   };
   if (mirror === 'x' || mirror === 'y') sym.mirror = mirror;
+  // Keep "token absent" distinct from "no": older files have no exclude_from_sim.
+  if (childNamed(node, 'exclude_from_sim')) sym.excludedFromSim = boolField(node, 'exclude_from_sim', false);
   const uuid = stringField(node, 'uuid');
   if (uuid) sym.uuid = uuid;
   return sym;

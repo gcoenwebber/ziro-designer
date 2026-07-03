@@ -15,6 +15,10 @@ import {
   refId,
   symbolBodyBBox,
   danglingPinPositions,
+  fieldShownText,
+  fieldBoundingBox,
+  fieldDrawRotation,
+  ITALIC_TILT,
   type BBox,
   type Transform,
   type Schematic,
@@ -220,19 +224,23 @@ export function renderSchematic(
           pinIndex = drawLibUnit(ctx, unit, sym.at, t, theme, pins, symId, pinIndex, highlight, shadowWidth);
       }
     }
-    // Instance fields are stored in absolute schematic coordinates. KiCad's
-    // SCH_FIELD::GetDrawRotation toggles the field's display angle when the parent
-    // symbol's transform.y1 != 0 (a 90°/270° rotation), so the text reads with the
-    // symbol — horizontal field on an upright symbol becomes vertical when rotated.
-    const ty1 = symbolTransform(sym.angle, sym.mirror).y1;
+    // Fields are painted exactly as KiCad's SCH_PAINTER::draw(SCH_FIELD): compute
+    // the field's bounding box (text box rotated by the field angle, mapped through
+    // the symbol transform — SCH_FIELD::GetBoundingBox), then stroke the text
+    // CENTER/CENTER at the box centre with the draw rotation (GetDrawRotation).
+    // A multi-unit Reference gains its unit letter (GetRef(..., true)).
+    const unitCount = lib ? lib.units.reduce((m, u) => Math.max(m, u.unit), 0) : 1;
     for (const f of sym.fields) {
-      if (!f.at || f.effects?.hidden || f.value === '') continue;
+      if (!f.at || f.effects?.hidden) continue;
+      const shown = fieldShownText(f, sym, unitCount);
+      if (shown === '') continue;
+      const box = fieldBoundingBox(f, sym, shown, measureText);
+      if (!inView(box.x, box.y, box.x + box.w, box.y + box.h)) continue;
       const h = f.effects?.fontSize?.[0] ?? 1.27 * MM;
-      if (!inView(f.at.x - h * f.value.length, f.at.y - h, f.at.x + h * f.value.length, f.at.y + h)) continue;
-      const color = f.key === 'Reference' ? theme.reference : f.key === 'Value' ? theme.value : theme.label;
-      const storedHoriz = (f.angle % 180) === 0;
-      const drawHoriz = ty1 !== 0 ? !storedHoriz : storedHoriz;
-      drawText(ctx, f.value, f.at, h, color, f.effects?.justify, drawHoriz ? 0 : 90);
+      const color = f.effects?.color ? cssColor(f.effects.color)
+        : f.key === 'Reference' ? theme.reference : f.key === 'Value' ? theme.value : theme.label;
+      const centre = { x: box.x + Math.trunc(box.w / 2), y: box.y + Math.trunc(box.h / 2) };
+      drawText(ctx, shown, centre, h, color, undefined, fieldDrawRotation(f, sym), f.effects?.bold, f.effects?.italic);
     }
   });
 
@@ -712,6 +720,7 @@ function drawText(
   justify?: readonly string[],
   angleDeg = 0,
   bold = false,
+  italic = false,
 ): void {
   if (text === '' || text === '~') return;
 
@@ -748,7 +757,10 @@ function drawText(
   const { strokes, width } = layoutText(text, heightIU);
   const offX = right ? -width : left ? 0 : -width / 2; // default: centre
   const offY = top ? cap : bottom ? 0 : cap / 2;       // baseline placement; default: middle
-  const place = (p: Vec2): Vec2 => placeAt(p.x + offX, p.y + offY);
+  // Italic: STROKE_GLYPH::Transform shears each point right by y·ITALIC_TILT
+  // (y is negative above the baseline, so tops lean right) — glyph.cpp.
+  const tilt = italic ? ITALIC_TILT : 0;
+  const place = (p: Vec2): Vec2 => placeAt(p.x - p.y * tilt + offX, p.y + offY);
 
   ctx.strokeStyle = color;
   // KiCad text pen: default ~size/8 clamped; bold = size/5 (GetPenSizeForBold).

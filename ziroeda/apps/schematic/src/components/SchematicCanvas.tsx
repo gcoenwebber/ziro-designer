@@ -78,6 +78,8 @@ interface Props {
   onHighlight?: (id: string | null) => void;
   /** Switch the active tool (used to auto-start a wire from a dangling pin). */
   onRequestTool?: (id: string) => void;
+  /** Double-clicked item (KiCad's Properties action, sch_edit_tool.cpp). */
+  onEditItem?: (id: string, kind: 'symbol' | 'line' | 'junction' | 'label') => void;
   onCommand: (cmd: EditCommand) => void;
   onCursorMove?: (world: Vec2 | null) => void;
   onScaleChange?: (scale: number) => void;
@@ -86,7 +88,7 @@ interface Props {
 type Mode = 'idle' | 'pan' | 'move';
 
 export const SchematicCanvas = forwardRef<CanvasController, Props>(function SchematicCanvas(
-  { schematic, libById, selection, activeTool, lineMode, placeLib, pendingLabel, highlight, onSelect, onHighlight, onRequestTool, onCommand, onCursorMove, onScaleChange },
+  { schematic, libById, selection, activeTool, lineMode, placeLib, pendingLabel, highlight, onSelect, onHighlight, onRequestTool, onEditItem, onCommand, onCursorMove, onScaleChange },
   ref,
 ): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -431,9 +433,17 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
     if (!committedMove) draw();
   }, [activeTool, onCommand, buildMove, onSelect, draw]);
 
-  const onDoubleClick = useCallback(() => {
-    if (activeTool === 'drawWire' || activeTool === 'drawBus') { wireAnchorRef.current = null; draw(); }
-  }, [activeTool, draw]);
+  const onDoubleClick = useCallback((e: React.MouseEvent) => {
+    if (activeTool === 'drawWire' || activeTool === 'drawBus') { wireAnchorRef.current = null; draw(); return; }
+    // Select tool: double-click opens the item's properties (KiCad binds mouse
+    // double-click to SCH_ACTIONS::properties -> SCH_EDIT_TOOL::EditProperties).
+    if (activeTool === 'select') {
+      const vp = viewportRef.current;
+      if (!vp) return;
+      const hit = hitTest(schematic, libById, toWorld(e.clientX, e.clientY), (6 * dpr()) / vp.scale);
+      if (hit) onEditItem?.(hit.id, hit.kind);
+    }
+  }, [activeTool, draw, schematic, libById, onEditItem]);
 
   // Escape ends an in-progress wire; R/X/Y rotate/mirror (KiCad hotkeys): the
   // attached symbol while placing, otherwise the current selection.
@@ -442,7 +452,7 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       if (e.key === 'Escape' && wireAnchorRef.current) { wireAnchorRef.current = null; draw(); return; }
 
       const tgt = e.target as HTMLElement | null;
-      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.tagName === 'SELECT' || tgt.isContentEditable)) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
       const k = e.key.toLowerCase();

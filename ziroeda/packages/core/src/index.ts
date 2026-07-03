@@ -34,6 +34,24 @@ export {
   orientationFromTransform,
   rotateOrientation,
   mirrorOrientation,
+  type TextMeasurer,
+  type Box,
+  DEFAULT_TEXT_SIZE,
+  ITALIC_TILT,
+  letterSubReference,
+  fieldShownText,
+  fieldTextBox,
+  fieldBoundingBox,
+  fieldDrawRotation,
+  isHorizJustifyFlipped,
+  isVertJustifyFlipped,
+  effectiveHorizJustify,
+  effectiveVertJustify,
+  storedForEffectiveHoriz,
+  storedForEffectiveVert,
+  justifyTokens,
+  storedHJustify,
+  storedVJustify,
 } from './geom/index.js';
 
 export * as edit from './edit/index.js';
@@ -68,6 +86,11 @@ export {
   mergeColinearWires,
   withCleanup,
   type TransformOp,
+  editSymbolProperties,
+  isMandatoryField,
+  MANDATORY_FIELDS,
+  type SymbolEdit,
+  type EditedField,
 } from './edit/index.js';
 
 export * as connectivity from './connectivity/index.js';

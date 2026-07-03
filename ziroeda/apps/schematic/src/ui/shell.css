@@ -288,3 +288,44 @@ html, body { background: var(--chrome-bg2); }
   border: 1px solid var(--chrome-border); border-radius: 4px; outline: none;
 }
 .ze-select:focus { border-color: var(--chrome-active-border); }
+
+/* Symbol Properties dialog (KiCad DIALOG_SYMBOL_PROPERTIES) */
+.ze-modal.ze-props-dialog { width: 1060px; height: auto; max-height: 90vh; }
+.ze-props-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: auto; }
+.ze-props-error { background: #5d2226; border: 1px solid #a2363e; color: #ffd9dc; padding: 6px 10px; border-radius: 4px; font-size: 13px; cursor: pointer; }
+.ze-props-grid-wrap { overflow: auto; max-height: 300px; border: 1px solid var(--chrome-border); border-radius: 4px; }
+.ze-props-grid { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.ze-props-grid th {
+  position: sticky; top: 0; background: var(--chrome-bg2); color: #c7c9cc;
+  text-align: left; font-weight: 600; padding: 5px 8px; border-bottom: 1px solid var(--chrome-border);
+  white-space: nowrap;
+}
+.ze-props-grid td { border-bottom: 1px solid var(--chrome-border); padding: 2px 4px; white-space: nowrap; }
+.ze-props-grid td.c { text-align: center; }
+.ze-props-grid tr.sel td { background: rgba(45, 108, 223, 0.18); }
+.ze-cell-input {
+  width: 110px; padding: 3px 6px; font: inherit; font-size: 12.5px;
+  background: var(--chrome-bg2); color: var(--chrome-fg);
+  border: 1px solid transparent; border-radius: 3px; outline: none;
+}
+.ze-cell-input:focus { border-color: var(--chrome-active-border); }
+.ze-cell-input.num { width: 64px; text-align: right; }
+.ze-cell-select {
+  padding: 3px 4px; font: inherit; font-size: 12.5px;
+  background: var(--chrome-bg2); color: var(--chrome-fg);
+  border: 1px solid transparent; border-radius: 3px; outline: none;
+}
+.ze-cell-select:focus { border-color: var(--chrome-active-border); }
+.ze-props-rowbtns { display: flex; gap: 6px; align-items: center; }
+.ze-props-rowbtns .grow { flex: 1; }
+.ze-btn.sm { padding: 2px 10px; font-size: 13px; }
+.ze-props-columns { display: flex; gap: 12px; }
+.ze-props-group {
+  flex: 1; border: 1px solid var(--chrome-border); border-radius: 4px;
+  padding: 8px 12px 10px; display: flex; flex-direction: column; gap: 7px; min-width: 0;
+}
+.ze-props-group legend { padding: 0 6px; font-size: 12.5px; color: #c7c9cc; }
+.ze-props-group label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.ze-props-group label.row > span { width: 56px; flex: 0 0 auto; color: #c7c9cc; font-size: 13px; }
+.ze-props-libid { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: #9a9ca0; }
+.ze-props-libid .val { color: var(--chrome-fg); font-family: monospace; overflow: hidden; text-overflow: ellipsis; }

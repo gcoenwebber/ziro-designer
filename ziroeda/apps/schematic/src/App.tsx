@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { parse, readSchematic, serializeSchematic, iuToMM, deleteByIds, transformItems, computeNetlist, withCleanup, History, type Schematic, type LibSymbol, type EditCommand, type Vec2, type TransformOp, type LabelKind, type LabelShape } from '@ziroeda/core';
+import { parse, readSchematic, serializeSchematic, iuToMM, deleteByIds, transformItems, computeNetlist, withCleanup, refId, editSymbolProperties, History, type Schematic, type LibSymbol, type EditCommand, type Vec2, type TransformOp, type LabelKind, type LabelShape, type SymbolEdit } from '@ziroeda/core';
 import { SchematicCanvas, type CanvasController, type LineMode, type PendingLabel } from './components/SchematicCanvas.js';
 import { LabelDialog } from './components/LabelDialog.js';
+import { SymbolPropertiesDialog } from './components/SymbolPropertiesDialog.js';
 import { Toolbar } from './ui/Toolbar.js';
 import { TOP_TOOLBAR, LEFT_TOOLBAR, RIGHT_TOOLBAR } from './ui/toolbars.js';
 import { MenuBar } from './ui/MenuBar.js';
@@ -63,6 +64,8 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
   const [selFilter, setSelFilter] = useState<Set<string>>(new Set(FILTER_CATS.map((c) => c[0])));
   const [cursor, setCursor] = useState<Vec2 | null>(null);
   const [scale, setScale] = useState(1);
+  // The symbol whose properties dialog is open (its refId), or null.
+  const [propsTarget, setPropsTarget] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
@@ -120,6 +123,21 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
 
   const undo = useCallback(() => setDoc((d) => (d ? history.current.undo(d) ?? d : d)), []);
   const redo = useCallback(() => setDoc((d) => (d ? history.current.redo(d) ?? d : d)), []);
+
+  // KiCad's Properties action: only symbols have a properties dialog so far.
+  const onEditItem = useCallback((id: string, kind: 'symbol' | 'line' | 'junction' | 'label') => {
+    if (kind === 'symbol') setPropsTarget(id);
+  }, []);
+
+  // Resolve the open dialog's target symbol against the current document.
+  const propsSymbol = useMemo(() => {
+    if (!doc || propsTarget === null) return null;
+    for (let i = 0; i < doc.symbols.length; i++) {
+      const s = doc.symbols[i]!;
+      if (refId('symbol', s.uuid, i) === propsTarget) return s;
+    }
+    return null;
+  }, [doc, propsTarget]);
 
   // Load a schematic from raw .kicad_sch text: parse (lossless), fresh history,
   // clear transient state, and fit the view. Embedded lib_symbols render as-is.
@@ -200,6 +218,8 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // While a modal properties dialog is open, only Escape acts on the editor.
+      if (propsTarget !== null && e.key !== 'Escape') return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         save();
@@ -213,7 +233,8 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
         e.preventDefault();
         redo();
       } else if (e.key === 'Escape') {
-        if (pendingLabel) { setPendingLabel(null); setActiveTool('select'); }
+        if (propsTarget !== null) setPropsTarget(null);
+        else if (pendingLabel) { setPendingLabel(null); setActiveTool('select'); }
         else if (activeTool !== 'select') { setActiveTool('select'); setPlaceLib(null); }
         else setSelection(new Set());
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && selection.size > 0) {
@@ -223,14 +244,27 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
       } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         // KiCad single-key tool hotkeys (A=symbol, W=wire, …). Skip while typing.
         const tgt = e.target as HTMLElement | null;
-        const typing = !!tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable);
+        const typing = !!tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.tagName === 'SELECT' || tgt.isContentEditable);
+        if (typing) return;
+        // E = Properties (KiCad SCH_ACTIONS::properties) on a single selected symbol.
+        if (e.key.toLowerCase() === 'e' && selection.size === 1) {
+          const id = [...selection][0]!;
+          setDoc((d) => {
+            if (d && d.symbols.some((s, i) => refId('symbol', s.uuid, i) === id)) {
+              e.preventDefault();
+              setPropsTarget(id);
+            }
+            return d;
+          });
+          return;
+        }
         const toolId = TOOL_HOTKEYS[e.key.toLowerCase()];
-        if (!typing && toolId) { e.preventDefault(); onToolSelect(toolId); }
+        if (toolId) { e.preventDefault(); onToolSelect(toolId); }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo, save, promptOpen, selection, runCommand, activeTool, onToolSelect, pendingLabel]);
+  }, [undo, redo, save, promptOpen, selection, runCommand, activeTool, onToolSelect, pendingLabel, propsTarget]);
 
   const units = toggles.has('unitsInches') ? 'in' : toggles.has('unitsMils') ? 'mils' : 'mm';
   const fmt = (iu: number): string => {
@@ -333,6 +367,7 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
             onSelect={onSelect}
             onHighlight={onHighlight}
             onRequestTool={onToolSelect}
+            onEditItem={onEditItem}
             onCommand={runCommand}
             onCursorMove={setCursor}
             onScaleChange={setScale}
@@ -356,6 +391,19 @@ function SchematicEditor({ onExitToHome }: { onExitToHome: () => void }): JSX.El
 
       {(activeTool === 'placeSymbol' || activeTool === 'placePower') && !placeLib && (
         <SymbolChooser onPick={setPlaceLib} onCancel={() => setActiveTool('select')} powerOnly={activeTool === 'placePower'} />
+      )}
+
+      {/* Double-click / E on a symbol: KiCad's Symbol Properties dialog. */}
+      {propsSymbol && propsTarget !== null && (
+        <SymbolPropertiesDialog
+          symbol={propsSymbol}
+          lib={libById.get(propsSymbol.libId)}
+          onOk={(edit: SymbolEdit) => {
+            runCommand(editSymbolProperties(propsTarget, edit));
+            setPropsTarget(null);
+          }}
+          onCancel={() => setPropsTarget(null)}
+        />
       )}
 
       {/* Label tools: a properties dialog names the label, then it follows the cursor. */}

@@ -45,6 +45,8 @@ export interface TextEffects {
   readonly justify?: readonly string[];
   /** Bold face (KiCad `(font ... bold)`): drawn with a heavier pen (size/5). */
   readonly bold?: boolean;
+  /** Italic face (KiCad `(font ... italic)`): glyphs sheared by ITALIC_TILT (1/8). */
+  readonly italic?: boolean;
   /** Explicit text colour [r,g,b,a] from `(font ... (color ...))`, if any. */
   readonly color?: readonly [number, number, number, number];
   readonly hidden: boolean;
@@ -123,6 +125,8 @@ export interface SchField {
   readonly at?: Vec2;
   readonly angle: number;
   readonly effects?: TextEffects;
+  /** `(show_name yes)` — render as "Name: Value" (SCH_FIELD::IsNameShown). */
+  readonly nameShown?: boolean;
   readonly source: SList;
 }
 
@@ -139,6 +143,8 @@ export interface SchSymbol {
   readonly inBom: boolean;
   readonly onBoard: boolean;
   readonly dnp: boolean;
+  /** `(exclude_from_sim yes)`; undefined when the token is absent (pre-7.0 files). */
+  readonly excludedFromSim?: boolean;
   readonly uuid?: string;
   readonly fields: readonly SchField[];
   readonly source: SList;

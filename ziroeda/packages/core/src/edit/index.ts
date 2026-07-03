@@ -9,3 +9,4 @@ export * from './snap.js';
 export * from './cleanup.js';
 export * from './build.js';
 export * from './mutate.js';
+export * from './properties.js';
