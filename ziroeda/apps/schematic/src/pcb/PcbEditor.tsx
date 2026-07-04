@@ -12,6 +12,7 @@ import { parse, readBoard, iuToMM, type Board } from '@ziroeda/core';
 import { MenuBar, type Menu } from '../ui/MenuBar.js';
 import { Toolbar } from '../ui/Toolbar.js';
 import { buildScene, buildDrawSteps, DEFAULT_DRAW_OPTIONS, type BoardScene, type PcbDrawOptions, type SheetInfo } from './renderBoard.js';
+import { mount3DViewer, type Viewer3D } from './pcb3d.js';
 import { layerColor, PCB_PAINT_ORDER } from './pcbTheme.js';
 import { PCB_TOP_TOOLBAR, PCB_LEFT_TOOLBAR, PCB_RIGHT_TOOLBAR, PCB_FILTER_CATS } from './pcbToolbars.js';
 import '../ui/shell.css';
@@ -105,6 +106,8 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic }: {
   const [selFilter, setSelFilter] = useState<Set<string>>(new Set(PCB_FILTER_CATS.map((c) => c[0])));
   const [netQuery, setNetQuery] = useState('');
   const [activeTool, setActiveTool] = useState('select');
+  const [show3D, setShow3D] = useState(false);
+  const viewer3dRef = useRef<HTMLDivElement>(null);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [scale, setScale] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -239,7 +242,10 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic }: {
     if (c) {
       const k = v.scale / c.view.scale;
       ctx.setTransform(k, 0, 0, k, v.tx - c.view.tx * k, v.ty - c.view.ty * k);
-      ctx.imageSmoothingEnabled = false; // sharper while scaling the cached bitmap
+      // While the crisp cache catches up: keep upscale (zoom-in) sharp with
+      // nearest-neighbour, but let downscale (zoom-out) stay smooth to avoid
+      // aliasing shimmer on thin traces.
+      ctx.imageSmoothingEnabled = k < 1;
       ctx.drawImage(c.canvas, 0, 0);
       ctx.imageSmoothingEnabled = true;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -374,10 +380,21 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic }: {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'f' || e.key === 'F') zoomToFit();
+      if (e.key === 'Escape') setShow3D(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [zoomToFit]);
+
+  // Mount the WebGL 3D viewer while the overlay is open.
+  useEffect(() => {
+    if (!show3D || !viewer3dRef.current || !boardRef.current) return;
+    let viewer: Viewer3D | null = null;
+    try {
+      viewer = mount3DViewer(viewer3dRef.current, boardRef.current);
+    } catch { viewer = null; }
+    return () => viewer?.dispose();
+  }, [show3D]);
 
   // ----- appearance data ------------------------------------------------------
 
@@ -453,6 +470,7 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic }: {
       case 'zoomOut': zoomStep(1 / 1.3); break;
       case 'zoomFit': case 'zoomFitObjects': zoomToFit(); break;
       case 'showEeschema': onShowSchematic?.(); break;
+      case 'threeDViewer': setShow3D(true); break;
       default: break; // editing actions are staged
     }
   };
@@ -765,6 +783,18 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic }: {
           onActivate={(id) => setActiveTool(id)}
         />
       </div>
+
+      {show3D && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'rgb(13,15,23)', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 12px', borderBottom: '1px solid #333', fontSize: 13 }}>
+            <b>3D Viewer</b>
+            <span style={{ opacity: 0.6 }}>drag to orbit · wheel to zoom · Esc to close</span>
+            <span style={{ flex: 1 }} />
+            <button onClick={() => setShow3D(false)}>Close ✕</button>
+          </div>
+          <div ref={viewer3dRef} style={{ flex: 1, minHeight: 0, position: 'relative' }} />
+        </div>
+      )}
 
       {/* pcbnew's two-part status bar: item counts row, then position row. */}
       <div className="ze-statusbar" style={{ gap: 18 }}>

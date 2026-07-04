@@ -489,9 +489,12 @@ export interface PcbViewTransform {
   ty: number;
 }
 
-const strokeAll = (ctx: CanvasRenderingContext2D, map: Map<number, Path2D>): void => {
+// KiCad renders every stroke at a minimum on-screen width so thin tracks stay
+// crisp and visible when zoomed out (GAL's minimum pen), instead of fading to a
+// sub-pixel blur. `minPen` is 1 device pixel expressed in world (IU) units.
+const strokeAll = (ctx: CanvasRenderingContext2D, map: Map<number, Path2D>, minPen = 0): void => {
   for (const [width, path] of map) {
-    ctx.lineWidth = width;
+    ctx.lineWidth = Math.max(width, minPen);
     ctx.stroke(path);
   }
 };
@@ -536,6 +539,9 @@ function sheetText(
   if (!text) return;
   const { strokes, width } = layoutText(text, size);
   const offX = justify === 'center' ? -width / 2 : 0;
+  // Normal-weight stroke pen ≈ height/8 (EDA_TEXT default), so worksheet text
+  // reads at the right weight instead of the 0.15 mm border pen.
+  ctx.lineWidth = size / 8;
   ctx.beginPath();
   for (const stroke of strokes) {
     for (let i = 0; i < stroke.length; i++) {
@@ -641,6 +647,8 @@ export function buildDrawSteps(
     if (sheet && opts.drawingSheet) drawDrawingSheet(ctx, sheet);
   });
 
+  const minPen = view.scale > 0 ? 1 / view.scale : 0; // 1 device px in IU
+
   const paintZones = (layer: string) => (): void => {
     const b = scene.layers.get(layer);
     if (!b?.hasZones || !opts.zones) return;
@@ -666,10 +674,10 @@ export function buildDrawSteps(
       ctx.fill(b.gfxFill, 'nonzero');
     }
     ctx.strokeStyle = color;
-    strokeAll(ctx, b.gfxStrokes);
+    strokeAll(ctx, b.gfxStrokes, minPen);
     if (opts.tracks && b.tracks.size > 0) {
       ctx.globalAlpha = opts.trackOpacity;
-      strokeAll(ctx, b.tracks);
+      strokeAll(ctx, b.tracks, minPen);
       ctx.globalAlpha = 1;
     }
     if (opts.pads && b.hasPads) {

@@ -79,24 +79,35 @@ export function measureText(text: string, size: number): number {
  * advance width. Mirrors GetTextAsGlyphs: index = codepoint-0x20, '?' fallback,
  * space advances by the space glyph width, each glyph advances by its width*size.
  */
+// KiCad FONT_METRICS::m_InterlinePitch (font_metrics.h): line pitch = 1.68·height.
+const INTERLINE_PITCH = 1.68;
+
 export function layoutText(text: string, size: number): { strokes: Vec2[][]; width: number } {
   const gl = glyphs();
   const out: Vec2[][] = [];
-  let cursorX = 0;
+  // KiCad draws multi-line text (EDA_TEXT with embedded \n) as stacked lines
+  // spaced by GetInterline(); a lone newline must not render as a glyph.
+  const lines = text.split('\n');
+  let maxWidth = 0;
 
-  for (const ch of text) {
-    const code = ch.codePointAt(0)!;
-    if (ch === ' ') {
-      cursorX += spaceAdvance() * size;
-      continue;
+  for (let li = 0; li < lines.length; li++) {
+    const lineY = li * INTERLINE_PITCH * size;
+    let cursorX = 0;
+    for (const ch of lines[li]!) {
+      const code = ch.codePointAt(0)!;
+      if (ch === ' ') {
+        cursorX += spaceAdvance() * size;
+        continue;
+      }
+      let dd = code - 0x20;
+      if (dd < 0 || dd >= gl.length) dd = '?'.charCodeAt(0) - 0x20; // non-printable/out-of-range -> '?'
+      const g = gl[dd]!;
+      for (const stroke of g.strokes) {
+        out.push(stroke.map((p) => ({ x: cursorX + p.x * size, y: lineY + p.y * size })));
+      }
+      cursorX += g.advance * size;
     }
-    let dd = code - 0x20;
-    if (dd < 0 || dd >= gl.length) dd = '?'.charCodeAt(0) - 0x20; // non-printable/out-of-range -> '?'
-    const g = gl[dd]!;
-    for (const stroke of g.strokes) {
-      out.push(stroke.map((p) => ({ x: cursorX + p.x * size, y: p.y * size })));
-    }
-    cursorX += g.advance * size;
+    if (cursorX > maxWidth) maxWidth = cursorX;
   }
-  return { strokes: out, width: cursorX };
+  return { strokes: out, width: maxWidth };
 }
