@@ -1,23 +1,22 @@
 /**
  * Board renderer: PCB_PAINTER (pcbnew/pcb_painter.cpp) ported to Canvas 2D.
  *
- * Strategy: the whole board is compiled once into retained per-layer Path2D
- * buckets in internal units (zone fills, track strokes grouped by width, pad
- * and via flashes, graphic strokes/fills), then every frame just sets the view
- * transform and replays the buckets in GAL_LAYER_ORDER. This is what makes a
- * 20k-track board pan smoothly: the per-frame cost is a few hundred canvas
- * calls, not hundreds of thousands.
+ * The whole board is compiled once into retained per-layer Path2D buckets,
+ * split by object class exactly like pcbnew's Appearance>Objects rows
+ * (appearance_controls.cpp s_objectSettings): tracks, vias, pads, zones,
+ * graphics and the three footprint-text classes. Every frame just sets the
+ * view transform and replays the buckets in GAL_LAYER_ORDER
+ * (pcb_draw_panel_gal.cpp), honoring per-object visibility and opacity
+ * (project_local_settings.cpp defaults: zones 0.6, images 0.6, rest 1.0).
  *
- * Faithfulness notes (all from pcb_painter.cpp / pad.cpp):
+ * Faithfulness notes (pcb_painter.cpp / pad.cpp):
  *  - vias and through-pads flash on every copper layer they span, in that
- *    layer's color (v9 padstack rendering; VIA_COPPER_LAYER_FOR/PAD_COPPER_…);
- *  - holes are drawn above all copper: hole walls in rgb(236,236,236), via
- *    holes in rgb(227,183,46), plated pad holes rgb(194,194,0), NPTH
- *    rgb(26,196,210) (s_defaultTheme);
- *  - roundrect corner radius = ratio · min(w,h) clamped to half
- *    (GetRoundRectCornerRadius), trapezoid corners per pad.cpp
- *    TransformShapeToPolygon, oval pads are stadium shapes;
- *  - zone fills sit directly under their layer's tracks (ZONE_LAYER_FOR).
+ *    layer's color (v9 padstack rendering);
+ *  - holes draw above all copper: walls rgb(236,236,236), via holes
+ *    rgb(227,183,46), plated pad holes rgb(194,194,0), NPTH rgb(26,196,210);
+ *  - text renders on its own board layer (LAYER_FP_TEXT is only a visibility
+ *    switch); roundrect radius = ratio·min(w,h); trapezoid corners per
+ *    pad.cpp; zone fills sit directly under their layer's tracks.
  */
 
 import {
@@ -33,16 +32,54 @@ import { layoutText, measureText } from '../render/strokeFont.js';
 
 const MM = 10000; // IU per mm, matches core units
 
-// KiCad object-opacity defaults (project_local_settings.cpp): tracks/vias/
-// pads 1.0, zones 0.6 — the translucent planes are a big part of the pcbnew look.
-const ZONE_OPACITY = 0.6;
+/** Object visibility + opacity, mirroring pcbnew's Appearance>Objects tab. */
+export interface PcbDrawOptions {
+  tracks: boolean;
+  vias: boolean;
+  pads: boolean;
+  zones: boolean;
+  fpValues: boolean;
+  fpReferences: boolean;
+  fpText: boolean;
+  trackOpacity: number;
+  viaOpacity: number;
+  padOpacity: number;
+  zoneOpacity: number;
+  /** Zone display mode: false = filled (default), true = outline sketch. */
+  zoneOutline: boolean;
+}
+
+/** KiCad defaults (project_local_settings.cpp + s_objectSettings). */
+export const DEFAULT_DRAW_OPTIONS: PcbDrawOptions = {
+  tracks: true,
+  vias: true,
+  pads: true,
+  zones: true,
+  fpValues: true,
+  fpReferences: true,
+  fpText: true,
+  trackOpacity: 1.0,
+  viaOpacity: 1.0,
+  padOpacity: 1.0,
+  zoneOpacity: 0.6,
+  zoneOutline: false,
+};
 
 interface LayerBuckets {
   zones: Path2D;
   hasZones: boolean;
-  flash: Path2D; // filled copper: pads + via annuli + filled graphics
-  hasFlash: boolean;
-  strokes: Map<number, Path2D>; // width -> tracks/open graphics
+  tracks: Map<number, Path2D>; // width -> segments/arcs (object: Tracks)
+  pads: Path2D; // pad flashes (object: Pads)
+  hasPads: boolean;
+  vias: Path2D; // via annuli (object: Vias)
+  hasVias: boolean;
+  gfxFill: Path2D;
+  hasGfxFill: boolean;
+  gfxStrokes: Map<number, Path2D>;
+  textRef: Map<number, Path2D>; // thickness -> glyph strokes
+  textVal: Map<number, Path2D>;
+  textFp: Map<number, Path2D>;
+  textBoard: Map<number, Path2D>;
 }
 
 export interface BoardScene {
@@ -52,24 +89,40 @@ export interface BoardScene {
   padHolesPlated: Path2D;
   padHoleWalls: Path2D;
   padHolesNP: Path2D;
-  texts: PcbTextItem[];
   bbox: { minX: number; minY: number; maxX: number; maxY: number } | null;
 }
+
+const newBuckets = (): LayerBuckets => ({
+  zones: new Path2D(),
+  hasZones: false,
+  tracks: new Map(),
+  pads: new Path2D(),
+  hasPads: false,
+  vias: new Path2D(),
+  hasVias: false,
+  gfxFill: new Path2D(),
+  hasGfxFill: false,
+  gfxStrokes: new Map(),
+  textRef: new Map(),
+  textVal: new Map(),
+  textFp: new Map(),
+  textBoard: new Map(),
+});
 
 const buckets = (scene: BoardScene, layer: string): LayerBuckets => {
   let b = scene.layers.get(layer);
   if (!b) {
-    b = { zones: new Path2D(), hasZones: false, flash: new Path2D(), hasFlash: false, strokes: new Map() };
+    b = newBuckets();
     scene.layers.set(layer, b);
   }
   return b;
 };
 
-const strokePath = (b: LayerBuckets, width: number): Path2D => {
-  let p = b.strokes.get(width);
+const pathIn = (map: Map<number, Path2D>, width: number): Path2D => {
+  let p = map.get(width);
   if (!p) {
     p = new Path2D();
-    b.strokes.set(width, p);
+    map.set(width, p);
   }
   return p;
 };
@@ -87,7 +140,7 @@ function expandLayers(list: string[], copperNames: string[]): string[] {
 }
 
 /** Copper layers spanned by a via, in board stackup order. */
-function viaSpan(board: Board, from: string, to: string, copperNames: string[]): string[] {
+function viaSpan(from: string, to: string, copperNames: string[]): string[] {
   const i0 = copperNames.indexOf(from);
   const i1 = copperNames.indexOf(to);
   if (i0 < 0 || i1 < 0) return copperNames;
@@ -178,7 +231,6 @@ function addChamferedRect(
   const hx = w / 2;
   const hy = h / 2;
   const has = (c: string): boolean => corners.includes(c);
-  // Walk clockwise from top-left in y-down coords.
   const tl = has('top_left');
   const tr = has('top_right');
   const br = has('bottom_right');
@@ -219,7 +271,7 @@ function addShape(scene: BoardScene, s: PcbShape): void {
   const b = buckets(scene, s.layer);
   const width = Math.max(s.width, 1);
   if (s.kind === 'line' && s.start && s.end) {
-    const p = strokePath(b, width);
+    const p = pathIn(b.gfxStrokes, width);
     p.moveTo(s.start.x, s.start.y);
     p.lineTo(s.end.x, s.end.y);
   } else if (s.kind === 'rect' && s.start && s.end) {
@@ -228,42 +280,78 @@ function addShape(scene: BoardScene, s: PcbShape): void {
     const rw = Math.abs(s.end.x - s.start.x);
     const rh = Math.abs(s.end.y - s.start.y);
     if (s.fill) {
-      b.flash.rect(x, y, rw, rh);
-      b.hasFlash = true;
+      b.gfxFill.rect(x, y, rw, rh);
+      b.hasGfxFill = true;
     }
-    strokePath(b, width).rect(x, y, rw, rh);
+    pathIn(b.gfxStrokes, width).rect(x, y, rw, rh);
   } else if (s.kind === 'circle' && s.center && s.end) {
     const r = Math.hypot(s.end.x - s.center.x, s.end.y - s.center.y);
     if (r <= 0) return;
     if (s.fill) {
-      b.flash.moveTo(s.center.x + r, s.center.y);
-      b.flash.arc(s.center.x, s.center.y, r, 0, Math.PI * 2);
-      b.hasFlash = true;
+      b.gfxFill.moveTo(s.center.x + r, s.center.y);
+      b.gfxFill.arc(s.center.x, s.center.y, r, 0, Math.PI * 2);
+      b.hasGfxFill = true;
     }
-    const p = strokePath(b, width);
+    const p = pathIn(b.gfxStrokes, width);
     p.moveTo(s.center.x + r, s.center.y);
     p.arc(s.center.x, s.center.y, r, 0, Math.PI * 2);
   } else if (s.kind === 'arc' && s.start && s.mid && s.end) {
     const pts = tessellateArc(s.start, s.mid, s.end);
-    const p = strokePath(b, width);
+    const p = pathIn(b.gfxStrokes, width);
     p.moveTo(pts[0]!.x, pts[0]!.y);
     for (let i = 1; i < pts.length; i++) p.lineTo(pts[i]!.x, pts[i]!.y);
   } else if ((s.kind === 'poly' || s.kind === 'curve') && s.pts && s.pts.length >= 2) {
     if (s.fill && s.pts.length >= 3) {
-      b.flash.moveTo(s.pts[0]!.x, s.pts[0]!.y);
-      for (let i = 1; i < s.pts.length; i++) b.flash.lineTo(s.pts[i]!.x, s.pts[i]!.y);
-      b.flash.closePath();
-      b.hasFlash = true;
+      b.gfxFill.moveTo(s.pts[0]!.x, s.pts[0]!.y);
+      for (let i = 1; i < s.pts.length; i++) b.gfxFill.lineTo(s.pts[i]!.x, s.pts[i]!.y);
+      b.gfxFill.closePath();
+      b.hasGfxFill = true;
     }
-    const p = strokePath(b, width);
+    const p = pathIn(b.gfxStrokes, width);
     p.moveTo(s.pts[0]!.x, s.pts[0]!.y);
     for (let i = 1; i < s.pts.length; i++) p.lineTo(s.pts[i]!.x, s.pts[i]!.y);
     if (s.fill) p.closePath();
   }
 }
 
-/** Compile the board into retained per-layer paths. */
-export function buildScene(board: Board): BoardScene {
+/** Bake a text item's glyph strokes into the given thickness->path map. */
+function addText(map: Map<number, Path2D>, t: PcbTextItem): void {
+  const size = t.size.y;
+  if (size <= 0 || t.text === '') return;
+  const { strokes, width } = layoutText(t.text, size);
+  const thickness = Math.max(t.thickness ?? Math.round(size * 0.15), 1);
+  // PCB text anchors CENTER/CENTER by default (EDA_TEXT on boards).
+  const justify = t.justify ?? [];
+  const hAlign = justify.includes('left') ? 'left' : justify.includes('right') ? 'right' : 'center';
+  const vAlign = justify.includes('top') ? 'top' : justify.includes('bottom') ? 'bottom' : 'center';
+  const offX = hAlign === 'left' ? 0 : hAlign === 'right' ? -width : -width / 2;
+  const offY = vAlign === 'top' ? size : vAlign === 'bottom' ? 0 : size / 2;
+  const rad = (-t.angle * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const mir = t.mirror ? -1 : 1;
+  const path = pathIn(map, thickness);
+  for (const stroke of strokes) {
+    for (let i = 0; i < stroke.length; i++) {
+      const gx = (stroke[i]!.x + offX) * mir;
+      const gy = stroke[i]!.y + offY;
+      const x = t.at.x + gx * cos - gy * sin;
+      const y = t.at.y + gx * sin + gy * cos;
+      if (i === 0) path.moveTo(x, y);
+      else path.lineTo(x, y);
+      if (stroke.length === 1) path.lineTo(x + 1, y);
+    }
+  }
+}
+
+export interface SceneFilter {
+  /** Appearance>Objects "Footprints Front/Back": hide whole footprints per side. */
+  hideFrontFootprints?: boolean;
+  hideBackFootprints?: boolean;
+}
+
+/** Compile the board into retained per-layer, per-object paths. */
+export function buildScene(board: Board, filter: SceneFilter = {}): BoardScene {
   const scene: BoardScene = {
     layers: new Map(),
     viaHoles: new Path2D(),
@@ -271,7 +359,6 @@ export function buildScene(board: Board): BoardScene {
     padHolesPlated: new Path2D(),
     padHoleWalls: new Path2D(),
     padHolesNP: new Path2D(),
-    texts: [],
     bbox: null,
   };
   const copperNames = board.layers
@@ -288,7 +375,7 @@ export function buildScene(board: Board): BoardScene {
   };
 
   for (const t of board.tracks) {
-    const p = strokePath(buckets(scene, t.layer), Math.max(t.width, 1));
+    const p = pathIn(buckets(scene, t.layer).tracks, Math.max(t.width, 1));
     p.moveTo(t.start.x, t.start.y);
     p.lineTo(t.end.x, t.end.y);
     grow(t.start.x, t.start.y, t.width);
@@ -296,7 +383,7 @@ export function buildScene(board: Board): BoardScene {
   }
   for (const a of board.arcs) {
     const pts = tessellateArc(a.start, a.mid, a.end);
-    const p = strokePath(buckets(scene, a.layer), Math.max(a.width, 1));
+    const p = pathIn(buckets(scene, a.layer).tracks, Math.max(a.width, 1));
     p.moveTo(pts[0]!.x, pts[0]!.y);
     for (let i = 1; i < pts.length; i++) p.lineTo(pts[i]!.x, pts[i]!.y);
     grow(a.start.x, a.start.y, a.width);
@@ -304,14 +391,13 @@ export function buildScene(board: Board): BoardScene {
   }
   for (const v of board.vias) {
     const r = v.size / 2;
-    for (const layer of viaSpan(board, v.layers[0], v.layers[1], copperNames)) {
+    for (const layer of viaSpan(v.layers[0], v.layers[1], copperNames)) {
       const b = buckets(scene, layer);
-      b.flash.moveTo(v.at.x + r, v.at.y);
-      b.flash.arc(v.at.x, v.at.y, r, 0, Math.PI * 2);
-      b.hasFlash = true;
+      b.vias.moveTo(v.at.x + r, v.at.y);
+      b.vias.arc(v.at.x, v.at.y, r, 0, Math.PI * 2);
+      b.hasVias = true;
     }
     const hr = v.drill / 2;
-    // Hole wall ring ≈ hole + plating (visual match for pcb_painter's wall pass).
     scene.viaHoleWalls.moveTo(v.at.x + hr + 0.05 * MM, v.at.y);
     scene.viaHoleWalls.arc(v.at.x, v.at.y, hr + 0.05 * MM, 0, Math.PI * 2);
     scene.viaHoles.moveTo(v.at.x + hr, v.at.y);
@@ -338,19 +424,24 @@ export function buildScene(board: Board): BoardScene {
     for (const pt of s.pts ?? []) grow(pt.x, pt.y);
   }
   for (const fp of board.footprints) {
+    if (filter.hideFrontFootprints && fp.layer === 'F.Cu') continue;
+    if (filter.hideBackFootprints && fp.layer === 'B.Cu') continue;
     for (const s of fp.shapes) addShape(scene, s);
-    for (const t of fp.texts) if (!t.hide) addText(scene, t);
+    for (const t of fp.texts) {
+      if (t.hide) continue;
+      const b = buckets(scene, t.layer);
+      addText(t.kind === 'reference' ? b.textRef : t.kind === 'value' ? b.textVal : b.textFp, t);
+    }
     for (const pad of fp.pads) {
       if (pad.type === 'np_thru_hole') {
         // Painter draws NPTH as its hole in LAYER_NON_PLATEDHOLES.
         if (pad.drill) addHole(scene.padHolesNP, pad, pad.drill);
         continue;
       }
-      const flashLayers = expandLayers(pad.layers, copperNames);
-      for (const layer of flashLayers) {
-        const b = scene.layers.get(layer) ?? buckets(scene, layer);
-        addPadShape(b.flash, pad);
-        b.hasFlash = true;
+      for (const layer of expandLayers(pad.layers, copperNames)) {
+        const b = buckets(scene, layer);
+        addPadShape(b.pads, pad);
+        b.hasPads = true;
       }
       if (pad.drill && pad.type === 'thru_hole') {
         addHole(scene.padHoleWalls, pad, { ...pad.drill, w: pad.drill.w + 0.1 * MM, h: pad.drill.h + 0.1 * MM });
@@ -360,39 +451,12 @@ export function buildScene(board: Board): BoardScene {
     }
     grow(fp.at.x, fp.at.y);
   }
-  for (const t of board.texts) if (!t.hide) addText(scene, t);
+  for (const t of board.texts) {
+    if (!t.hide) addText(buckets(scene, t.layer).textBoard, t);
+  }
 
   scene.bbox = minX < maxX ? { minX, minY, maxX, maxY } : null;
   return scene;
-}
-
-function addText(scene: BoardScene, t: PcbTextItem): void {
-  const size = t.size.y;
-  if (size <= 0 || t.text === '') return;
-  const { strokes, width } = layoutText(t.text, size);
-  const thickness = Math.max(t.thickness ?? Math.round(size * 0.15), 1);
-  // PCB text anchors CENTER/CENTER by default (EDA_TEXT on boards).
-  const justify = t.justify ?? [];
-  const hAlign = justify.includes('left') ? 'left' : justify.includes('right') ? 'right' : 'center';
-  const vAlign = justify.includes('top') ? 'top' : justify.includes('bottom') ? 'bottom' : 'center';
-  const offX = hAlign === 'left' ? 0 : hAlign === 'right' ? -width : -width / 2;
-  const offY = vAlign === 'top' ? size : vAlign === 'bottom' ? 0 : size / 2;
-  const rad = (-t.angle * Math.PI) / 180;
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
-  const mir = t.mirror ? -1 : 1;
-  const path = strokePath(buckets(scene, t.layer), thickness);
-  for (const stroke of strokes) {
-    for (let i = 0; i < stroke.length; i++) {
-      const gx = (stroke[i]!.x + offX) * mir;
-      const gy = stroke[i]!.y + offY;
-      const x = t.at.x + gx * cos - gy * sin;
-      const y = t.at.y + gx * sin + gy * cos;
-      if (i === 0) path.moveTo(x, y);
-      else path.lineTo(x, y);
-      if (stroke.length === 1) path.lineTo(x + 1, y);
-    }
-  }
 }
 
 const addHole = (path: Path2D, pad: PcbPad, drill: { oblong: boolean; w: number; h: number; offset?: Vec2 }): void => {
@@ -423,6 +487,13 @@ export interface PcbViewTransform {
   ty: number;
 }
 
+const strokeAll = (ctx: CanvasRenderingContext2D, map: Map<number, Path2D>): void => {
+  for (const [width, path] of map) {
+    ctx.lineWidth = width;
+    ctx.stroke(path);
+  }
+};
+
 /**
  * The paint sequence as resumable steps, one per stacking pass. The editor
  * runs these across animation frames with a time budget so a 20k-track board
@@ -435,7 +506,7 @@ export function buildDrawSteps(
   visible: ReadonlySet<string>,
   widthPx: number,
   heightPx: number,
-  showHoles = true,
+  opts: PcbDrawOptions = DEFAULT_DRAW_OPTIONS,
 ): (() => void)[] {
   const steps: (() => void)[] = [];
   steps.push(() => {
@@ -449,48 +520,83 @@ export function buildDrawSteps(
 
   const paintZones = (layer: string) => (): void => {
     const b = scene.layers.get(layer);
-    if (!b?.hasZones) return;
-    ctx.fillStyle = layerColor(layer);
-    ctx.globalAlpha = ZONE_OPACITY;
-    ctx.fill(b.zones, 'nonzero');
+    if (!b?.hasZones || !opts.zones) return;
+    const color = layerColor(layer);
+    ctx.globalAlpha = opts.zoneOpacity;
+    if (opts.zoneOutline) {
+      // PCB_ACTIONS::zoneDisplayOutline — sketch the fill outlines.
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 0.05 * MM;
+      ctx.stroke(b.zones);
+    } else {
+      ctx.fillStyle = color;
+      ctx.fill(b.zones, 'nonzero');
+    }
     ctx.globalAlpha = 1;
   };
   const paintCopper = (layer: string) => (): void => {
     const b = scene.layers.get(layer);
     if (!b) return;
     const color = layerColor(layer);
-    if (b.hasFlash) {
+    if (b.hasGfxFill) {
       ctx.fillStyle = color;
-      ctx.fill(b.flash, 'nonzero');
+      ctx.fill(b.gfxFill, 'nonzero');
     }
     ctx.strokeStyle = color;
-    for (const [width, path] of b.strokes) {
-      ctx.lineWidth = width;
-      ctx.stroke(path);
+    strokeAll(ctx, b.gfxStrokes);
+    if (opts.tracks && b.tracks.size > 0) {
+      ctx.globalAlpha = opts.trackOpacity;
+      strokeAll(ctx, b.tracks);
+      ctx.globalAlpha = 1;
     }
+    if (opts.pads && b.hasPads) {
+      ctx.globalAlpha = opts.padOpacity;
+      ctx.fillStyle = color;
+      ctx.fill(b.pads, 'nonzero');
+      ctx.globalAlpha = 1;
+    }
+    if (opts.vias && b.hasVias) {
+      ctx.globalAlpha = opts.viaOpacity;
+      ctx.fillStyle = color;
+      ctx.fill(b.vias, 'nonzero');
+      ctx.globalAlpha = 1;
+    }
+  };
+  const paintText = (layer: string) => (): void => {
+    const b = scene.layers.get(layer);
+    if (!b) return;
+    ctx.strokeStyle = layerColor(layer);
+    if (opts.fpReferences) strokeAll(ctx, b.textRef);
+    if (opts.fpValues) strokeAll(ctx, b.textVal);
+    if (opts.fpText) strokeAll(ctx, b.textFp);
+    strokeAll(ctx, b.textBoard);
   };
   const pushLayer = (layer: string): void => {
     if (!visible.has(layer) || !scene.layers.has(layer)) return;
-    steps.push(paintZones(layer), paintCopper(layer));
+    steps.push(paintZones(layer), paintCopper(layer), paintText(layer));
   };
 
   const fCuIndex = PCB_PAINT_ORDER.indexOf('F.Cu');
   for (let i = 0; i <= fCuIndex; i++) pushLayer(PCB_PAINT_ORDER[i]!);
 
-  if (showHoles) {
-    steps.push(() => {
+  steps.push(() => {
+    if (opts.pads) {
       ctx.fillStyle = PCB_SPECIAL.padHoleWall;
       ctx.fill(scene.padHoleWalls);
       ctx.fillStyle = PCB_SPECIAL.padPlatedHole;
       ctx.fill(scene.padHolesPlated);
+    }
+    if (opts.vias) {
       ctx.fillStyle = PCB_SPECIAL.viaHoleWall;
       ctx.fill(scene.viaHoleWalls);
       ctx.fillStyle = PCB_SPECIAL.viaHole;
       ctx.fill(scene.viaHoles);
+    }
+    if (opts.pads) {
       ctx.fillStyle = PCB_SPECIAL.nonPlatedHole;
       ctx.fill(scene.padHolesNP);
-    });
-  }
+    }
+  });
 
   for (let i = fCuIndex + 1; i < PCB_PAINT_ORDER.length; i++) pushLayer(PCB_PAINT_ORDER[i]!);
   return steps;
@@ -504,9 +610,9 @@ export function drawBoard(
   visible: ReadonlySet<string>,
   widthPx: number,
   heightPx: number,
-  showHoles = true,
+  opts: PcbDrawOptions = DEFAULT_DRAW_OPTIONS,
 ): void {
-  for (const step of buildDrawSteps(ctx, scene, view, visible, widthPx, heightPx, showHoles)) step();
+  for (const step of buildDrawSteps(ctx, scene, view, visible, widthPx, heightPx, opts)) step();
 }
 
 export { measureText };

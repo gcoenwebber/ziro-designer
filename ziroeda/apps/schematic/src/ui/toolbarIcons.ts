@@ -6,6 +6,27 @@
 const URLS = import.meta.glob('../assets/toolbar/*.svg', { query: '?url', import: 'default', eager: true }) as Record<string, string>;
 
 const BITMAP: Record<string, string> = {
+  // pcb editor (icons per PCB_ACTIONS/ACTIONS .Icon() in pcb_actions.cpp)
+  boardSetup: 'options_board', threeDViewer: 'three_d', updatePcbFromSch: 'update_pcb_from_sch',
+  runDRC: 'drc', showEeschema: 'icon_eeschema_24', lock: 'locked', unlock: 'lock_unlock',
+  footprintBrowser: 'library_browser',
+  togglePolarCoords: 'polar_coord', crosshair45: 'cursor_fullscreen45',
+  showRatsnest: 'general_ratsnest', ratsnestLineMode: 'curved_ratsnest',
+  highContrast: 'contrast_mode', toggleNetHighlight: 'net_highlight',
+  zoneDisplayFilled: 'show_zone', zoneDisplayOutline: 'show_zone_disable',
+  padDisplayMode: 'pad_sketch', viaDisplayMode: 'via_sketch', trackDisplayMode: 'showtrack',
+  showLayersManager: 'layers_manager',
+  selectLasso: 'lasso', localRatsnest: 'tool_ratsnest', placeFootprint: 'module',
+  routeTrack: 'add_tracks', routeDiffPair: 'ps_diff_pair', tuneLength: 'ps_tune_length',
+  tuneDiffPair: 'ps_diff_pair_tune_length', tuneSkew: 'ps_diff_pair_tune_phase',
+  drawVia: 'add_via', drawZone: 'add_zone', drawRuleArea: 'add_keepout_area',
+  drawLine: 'add_graphical_segments', drawArc: 'add_arc', drawRectangle: 'add_rectangle',
+  drawCircle: 'add_circle', drawPolygon: 'add_graphical_polygon', drawBezier: 'add_bezier',
+  placeImage: 'image', drawTextBox: 'add_textbox', drawTable: 'table',
+  dimAligned: 'add_aligned_dimension', dimOrthogonal: 'add_orthogonal_dimension',
+  dimCenter: 'add_center_dimension', dimRadial: 'add_radial_dimension', dimLeader: 'add_leader',
+  deleteTool: 'trash', drillOrigin: 'set_origin', gridOrigin: 'grid_select_axis',
+  placePoint: 'add_point', measure: 'measurement',
   // top toolbar
   new: 'new_generic', open: 'directory_open', save: 'save', schematicSetup: 'options_schematic',
   pageSettings: 'sheetset', print: 'print_button', plot: 'plot', paste: 'paste', undo: 'undo', redo: 'redo',
