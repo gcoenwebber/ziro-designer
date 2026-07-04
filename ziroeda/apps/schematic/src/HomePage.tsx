@@ -102,7 +102,7 @@ const treeIconFor = (file: string): string =>
 export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb }: {
   onOpenSchematic: () => void;
   onOpenProject?: (files: PickedHomeFile[], startFile?: string) => void;
-  onOpenPcb?: (file: PickedHomeFile) => void;
+  onOpenPcb?: (file: PickedHomeFile, files?: PickedHomeFile[]) => void;
 }): JSX.Element {
   const dirInputRef = useRef<HTMLInputElement>(null);
   const filesInputRef = useRef<HTMLInputElement>(null);
@@ -242,7 +242,9 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb }: {
   // board (KiCad's default 2-layer stack with the full tech layer table).
   const launchPcb = (): void => {
     if (!onOpenPcb) return;
-    onOpenPcb(pcbFile ?? { name: 'untitled.kicad_pcb', text: EMPTY_PCB });
+    // Carry the whole project so the board editor can jump to the schematic.
+    if (pcbFile && picked) onOpenPcb(pcbFile, picked);
+    else onOpenPcb({ name: 'untitled.kicad_pcb', text: EMPTY_PCB });
   };
 
   // The nested schematic hierarchy, exactly like KiCad's project window: the
@@ -364,7 +366,7 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb }: {
                       className="ze-tree-item"
                       style={{ paddingLeft: 24, cursor: isPcb ? 'pointer' : 'default' }}
                       title={isPcb ? 'Open in the PCB Editor' : f.name}
-                      onClick={isPcb && onOpenPcb ? () => onOpenPcb(f) : undefined}
+                      onClick={isPcb && onOpenPcb ? () => onOpenPcb(f, picked ?? undefined) : undefined}
                     >
                       <TreeIcon name={treeIconFor(f.name)} />
                       <span>{basename(f.name)}</span>

@@ -6,6 +6,7 @@
 const URLS = import.meta.glob('../assets/toolbar/*.svg', { query: '?url', import: 'default', eager: true }) as Record<string, string>;
 
 const BITMAP: Record<string, string> = {
+  showPcbNew: 'icon_pcbnew_24',
   // pcb editor (icons per PCB_ACTIONS/ACTIONS .Icon() in pcb_actions.cpp)
   boardSetup: 'options_board', threeDViewer: 'three_d', updatePcbFromSch: 'update_pcb_from_sch',
   runDRC: 'drc', showEeschema: 'icon_eeschema_24', lock: 'locked', unlock: 'lock_unlock',

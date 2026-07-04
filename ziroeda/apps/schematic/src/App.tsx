@@ -46,7 +46,7 @@ export interface PickedFile { name: string; text: string }
 
 const DEFAULT_FILE = 'untitled.kicad_sch';
 
-function SchematicEditor({ onExitToHome, initialProject, initialFile }: { onExitToHome: () => void; initialProject?: PickedFile[] | null; initialFile?: string | null }): JSX.Element {
+function SchematicEditor({ onExitToHome, onShowPcb, initialProject, initialFile }: { onExitToHome: () => void; onShowPcb?: () => void; initialProject?: PickedFile[] | null; initialFile?: string | null }): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const initial = useMemo<Schematic | null>(() => {
     try {
@@ -417,8 +417,9 @@ function SchematicEditor({ onExitToHome, initialProject, initialFile }: { onExit
     else if (id === 'open') promptOpen();
     else if (id === 'save') save();
     else if (id === 'erc') runErcNow();
+    else if (id === 'showPcbNew') onShowPcb?.();
     else if (TX[id]) setSelection((sel) => { if (sel.size > 0) runCommand(transformItems(sel, TX[id]!)); return sel; });
-  }, [undo, redo, save, promptOpen, runCommand, runErcNow]);
+  }, [undo, redo, save, promptOpen, runCommand, runErcNow, onShowPcb]);
 
   const menus = useMemo(() => buildMenus({ tool: onToolSelect, action: onTopAction }), [onToolSelect, onTopAction]);
 
@@ -684,28 +685,79 @@ function renderSheetNode(
   );
 }
 
-/** Top-level app: the KiCad-style project manager, then the schematic editor. */
+const pcbBasename = (p: string): string => p.split('/').pop()!.split('\\').pop()!;
+
+/**
+ * Top-level app: KiCad's project manager, then the schematic and PCB editors.
+ * Like KiCad, the two editors share one open project and stay resident — you
+ * cross-navigate between them (eeschema's "Open PCB" / pcbnew's "Open
+ * Schematic") without reloading or losing state. Both are kept mounted once
+ * used and toggled with CSS so the 80 MB board is parsed only once.
+ */
 export function App(): JSX.Element {
   const [view, setView] = useState<'home' | 'schematic' | 'pcb'>('home');
   const [projectFiles, setProjectFiles] = useState<PickedFile[] | null>(null);
   const [startFile, setStartFile] = useState<string | null>(null);
-  const [pcbFile, setPcbFile] = useState<PickedFile | null>(null);
-  if (view === 'pcb' && pcbFile) {
+  // A board opened directly (no schematic project around it).
+  const [standalonePcb, setStandalonePcb] = useState<PickedFile | null>(null);
+  const [schMounted, setSchMounted] = useState(false);
+  const [pcbMounted, setPcbMounted] = useState(false);
+
+  const pcbFile = useMemo<PickedFile | null>(
+    () => standalonePcb ?? projectFiles?.find((f) => /\.kicad_pcb$/i.test(f.name)) ?? null,
+    [projectFiles, standalonePcb],
+  );
+  const hasSchematic = useMemo(
+    () => !!projectFiles?.some((f) => /\.kicad_sch$/i.test(f.name)),
+    [projectFiles],
+  );
+
+  const goHome = useCallback(() => setView('home'), []);
+  const showPcb = useCallback(() => { setPcbMounted(true); setView('pcb'); }, []);
+  const showSchematic = useCallback(() => { setSchMounted(true); setView('schematic'); }, []);
+
+  if (view === 'home') {
     return (
-      <PcbEditor
-        fileName={pcbFile.name.split('/').pop()!.split('\\').pop()!}
-        text={pcbFile.text}
-        onExit={() => setView('home')}
+      <HomePage
+        onOpenSchematic={() => {
+          setProjectFiles(null); setStandalonePcb(null); setStartFile(null);
+          setSchMounted(true); setView('schematic');
+        }}
+        onOpenProject={(files, start) => {
+          setProjectFiles(files); setStandalonePcb(null); setStartFile(start ?? null);
+          setSchMounted(true); setView('schematic');
+        }}
+        onOpenPcb={(file, files) => {
+          if (files) { setProjectFiles(files); setStandalonePcb(null); }
+          else { setStandalonePcb(file); setProjectFiles(null); }
+          setPcbMounted(true); setView('pcb');
+        }}
       />
     );
   }
-  return view === 'home' ? (
-    <HomePage
-      onOpenSchematic={() => { setProjectFiles(null); setStartFile(null); setView('schematic'); }}
-      onOpenProject={(files, start) => { setProjectFiles(files); setStartFile(start ?? null); setView('schematic'); }}
-      onOpenPcb={(file) => { setPcbFile(file); setView('pcb'); }}
-    />
-  ) : (
-    <SchematicEditor onExitToHome={() => setView('home')} initialProject={projectFiles} initialFile={startFile} />
+
+  return (
+    <>
+      {schMounted && (
+        <div style={{ display: view === 'schematic' ? 'contents' : 'none' }}>
+          <SchematicEditor
+            onExitToHome={goHome}
+            onShowPcb={pcbFile ? showPcb : undefined}
+            initialProject={projectFiles}
+            initialFile={startFile}
+          />
+        </div>
+      )}
+      {pcbMounted && pcbFile && (
+        <div style={{ display: view === 'pcb' ? 'contents' : 'none' }}>
+          <PcbEditor
+            fileName={pcbBasename(pcbFile.name)}
+            text={pcbFile.text}
+            onExit={goHome}
+            onShowSchematic={hasSchematic ? showSchematic : undefined}
+          />
+        </div>
+      )}
+    </>
   );
 }

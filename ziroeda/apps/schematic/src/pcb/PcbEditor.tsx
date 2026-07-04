@@ -27,7 +27,7 @@ const RADIO_GROUPS: string[][] = [
 ];
 const DEFAULT_TOGGLES = new Set([
   'toggleGrid', 'unitsMm', 'crosshairSmall', 'lineMode90',
-  'showRatsnest', 'ratsnestLineMode', 'zoneDisplayFilled', 'showLayersManager',
+  'showRatsnest', 'ratsnestLineMode', 'zoneDisplayFilled', 'showLayersManager', 'showProperties',
 ]);
 
 // Objects tab rows, exactly appearance_controls.cpp s_objectSettings.
@@ -83,10 +83,11 @@ const PRESETS: { name: string; layers: (all: string[], copper: string[]) => stri
   { name: 'Back Assembly View', layers: () => ['B.SilkS', 'B.Mask', 'B.Fab', 'B.CrtYd', 'Edge.Cuts'] },
 ];
 
-export function PcbEditor({ fileName, text, onExit }: {
+export function PcbEditor({ fileName, text, onExit, onShowSchematic }: {
   fileName: string;
   text: string;
   onExit: () => void;
+  onShowSchematic?: () => void;
 }): JSX.Element {
   const [board, setBoard] = useState<Board | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -111,6 +112,7 @@ export function PcbEditor({ fileName, text, onExit }: {
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
 
   const showAppearance = toggles.has('showLayersManager');
+  const showProperties = toggles.has('showProperties');
 
   // Draw options derived from the Objects tab + zone display mode.
   const drawOpts = useMemo<PcbDrawOptions>(() => ({
@@ -159,36 +161,57 @@ export function PcbEditor({ fileName, text, onExit }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [objects.footprintsFront, objects.footprintsBack]);
 
-  // pcbnew rasterises into a backing store and pans that bitmap; same here.
+  // pcbnew rasterises into a backing store; the same here. A crisp raster is
+  // built off-screen (time-sliced so a 20k-track board never blocks the UI),
+  // and every frame the current view blits that raster with a delta transform.
+  // Crucially the crisp render is NOT cancelled or debounced while the user is
+  // interacting: it runs to completion, promotes itself, and — if the view has
+  // moved on — immediately starts another. So the picture continuously
+  // re-sharpens *during* a zoom/pan instead of only after it stops.
   const cacheRef = useRef<{ canvas: HTMLCanvasElement; view: { scale: number; tx: number; ty: number } } | null>(null);
-  const idleTimer = useRef(0);
-  const jobRef = useRef(0);
+  const renderingRef = useRef(false);
+  const viewChangedRef = useRef(true);
 
-  const renderToCache = useCallback((onDone?: () => void) => {
+  const viewMatchesCache = (): boolean => {
+    const c = cacheRef.current;
+    const v = viewRef.current;
+    const canvas = canvasRef.current;
+    return !!c && !!canvas && c.view.scale === v.scale && c.view.tx === v.tx && c.view.ty === v.ty
+      && c.canvas.width === canvas.width && c.canvas.height === canvas.height;
+  };
+
+  const startCrispRender = useCallback(() => {
+    if (renderingRef.current) return; // in flight — it re-checks the view on completion
     const canvas = canvasRef.current;
     const scene = sceneRef.current;
     if (!canvas || !scene || canvas.width < 2) return;
-    const job = ++jobRef.current;
+    if (viewMatchesCache()) { viewChangedRef.current = false; return; }
+    renderingRef.current = true;
+    viewChangedRef.current = false;
     const work = document.createElement('canvas');
     work.width = canvas.width;
     work.height = canvas.height;
     const cctx = work.getContext('2d');
-    if (!cctx) return;
+    if (!cctx) { renderingRef.current = false; return; }
     const jobView = { ...viewRef.current };
     const steps = buildDrawSteps(cctx, scene, jobView, visible, work.width, work.height, drawOpts);
     let i = 0;
     const run = (): void => {
-      if (job !== jobRef.current) return; // superseded by a newer render
       const t0 = performance.now();
       while (i < steps.length && performance.now() - t0 < 12) steps[i++]!();
       if (i < steps.length) {
         requestAnimationFrame(run);
       } else {
         cacheRef.current = { canvas: work, view: jobView };
-        onDone?.();
+        renderingRef.current = false;
+        requestDraw();
+        // The view moved on while we were rendering: keep chasing it so the
+        // image keeps sharpening throughout a continuous zoom.
+        if (viewChangedRef.current || !viewMatchesCache()) startCrispRender();
       }
     };
     run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, drawOpts]);
 
   const draw = useCallback(() => {
@@ -197,29 +220,25 @@ export function PcbEditor({ fileName, text, onExit }: {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const v = viewRef.current;
-    const cache = cacheRef.current;
-    const fresh = cache && cache.view.scale === v.scale && cache.view.tx === v.tx && cache.view.ty === v.ty
-      && cache.canvas.width === canvas.width && cache.canvas.height === canvas.height;
-    if (!fresh) {
-      clearTimeout(idleTimer.current);
-      idleTimer.current = window.setTimeout(() => renderToCache(() => requestDraw()), cache ? 120 : 0);
-    }
-    const c = cacheRef.current;
-    if (!c) {
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.fillStyle = 'rgb(0,16,35)';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      return;
+    if (!viewMatchesCache()) {
+      viewChangedRef.current = true;
+      startCrispRender();
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = 'rgb(0,16,35)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const k = v.scale / c.view.scale;
-    ctx.setTransform(k, 0, 0, k, v.tx - c.view.tx * k, v.ty - c.view.ty * k);
-    ctx.drawImage(c.canvas, 0, 0);
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const c = cacheRef.current;
+    if (c) {
+      const k = v.scale / c.view.scale;
+      ctx.setTransform(k, 0, 0, k, v.tx - c.view.tx * k, v.ty - c.view.ty * k);
+      ctx.imageSmoothingEnabled = false; // sharper while scaling the cached bitmap
+      ctx.drawImage(c.canvas, 0, 0);
+      ctx.imageSmoothingEnabled = true;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    }
     setScale(v.scale);
-  }, [renderToCache]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startCrispRender]);
 
   const requestDraw = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
@@ -417,6 +436,7 @@ export function PcbEditor({ fileName, text, onExit }: {
       case 'zoomIn': zoomStep(1.3); break;
       case 'zoomOut': zoomStep(1 / 1.3); break;
       case 'zoomFit': case 'zoomFitObjects': zoomToFit(); break;
+      case 'showEeschema': onShowSchematic?.(); break;
       default: break; // editing actions are staged
     }
   };
@@ -552,6 +572,17 @@ export function PcbEditor({ fileName, text, onExit }: {
       <div className="ze-body">
         <Toolbar entries={PCB_LEFT_TOOLBAR} orientation="vertical" side="left" toggled={toggles} onActivate={onLeftToggle} />
 
+        {showProperties && (
+          <div className="ze-leftdock" style={{ width: 220 }}>
+            <div className="ze-panel grow">
+              <div className="ze-panel-header">Properties</div>
+              <div className="ze-panel-body">
+                <div className="ze-muted">No objects selected</div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="ze-canvas-wrap" ref={wrapRef} style={{ position: 'relative' }}>
           <canvas
             ref={canvasRef}
@@ -597,27 +628,32 @@ export function PcbEditor({ fileName, text, onExit }: {
               <div className="ze-panel-body" style={{ overflow: 'auto' }}>
                 {tab === 'Layers' && (
                   <>
-                    {layerRows.map((name) => (
-                      <div
-                        key={name}
-                        className={`ze-tree-item ${name === activeLayer ? 'active' : ''}`}
-                        style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
-                        onClick={() => setActiveLayer(name)}
-                        title="Click to make active; use the checkbox to show/hide"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={visible.has(name)}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={() => toggleLayer(name)}
-                        />
-                        <span style={{
-                          width: 14, height: 14, borderRadius: 2, flex: '0 0 auto',
-                          background: layerColor(name), border: '1px solid #444',
-                        }} />
-                        <span>{name}</span>
-                      </div>
-                    ))}
+                    {layerRows.map((name) => {
+                      const on = visible.has(name);
+                      return (
+                        <div
+                          key={name}
+                          className={`ze-tree-item ${name === activeLayer ? 'active' : ''}`}
+                          style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}
+                          onClick={() => setActiveLayer(name)}
+                          title="Click to make active; click the eye to show/hide"
+                        >
+                          {/* eye toggle, like APPEARANCE_CONTROLS' visibility column */}
+                          <span
+                            onClick={(e) => { e.stopPropagation(); toggleLayer(name); }}
+                            style={{ width: 16, textAlign: 'center', opacity: on ? 1 : 0.3, cursor: 'pointer', userSelect: 'none' }}
+                            title={on ? 'Hide layer' : 'Show layer'}
+                          >
+                            {on ? '👁' : '—'}
+                          </span>
+                          <span style={{
+                            width: 14, height: 14, borderRadius: 2, flex: '0 0 auto',
+                            background: layerColor(name), border: '1px solid #444',
+                          }} />
+                          <span style={{ opacity: on ? 1 : 0.5 }}>{name}</span>
+                        </div>
+                      );
+                    })}
                     <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                       <span>Presets (Ctrl+Tab):</span>
                       <select
@@ -711,14 +747,25 @@ export function PcbEditor({ fileName, text, onExit }: {
         />
       </div>
 
+      {/* pcbnew's two-part status bar: item counts row, then position row. */}
+      <div className="ze-statusbar" style={{ gap: 18 }}>
+        <span className="cell"><b>Pads</b> {board?.footprints.reduce((n, f) => n + f.pads.length, 0) ?? 0}</span>
+        <span className="cell"><b>Vias</b> {board?.vias.length ?? 0}</span>
+        <span className="cell"><b>Track Segments</b> {board ? board.tracks.length + board.arcs.length : 0}</span>
+        <span className="cell"><b>Nets</b> {board ? Math.max(0, board.nets.size - 1) : 0}</span>
+        <span className="cell grow"><b>Unrouted</b> 0</span>
+        <span className="cell">{fileName}</span>
+      </div>
       <div className="ze-statusbar">
         <span className="cell">Z {scale > 0 ? (scale * 1000).toFixed(2) : '—'}</span>
         <span className="cell">
-          {cursor ? `X ${fmtCoord(cursor.x)} Y ${fmtCoord(cursor.y)} ${unitLabel}` : `X — Y — ${unitLabel}`}
+          {cursor ? `X ${fmtCoord(cursor.x)} Y ${fmtCoord(cursor.y)}` : 'X — Y —'}
         </span>
-        <span className="cell">{activeLayer}</span>
-        <span className="cell grow">{board ? `${board.footprints.length} footprints · ${board.tracks.length + board.arcs.length} tracks · ${board.vias.length} vias · ${board.nets.size} nets` : ''}</span>
-        <span className="cell">{fileName}</span>
+        <span className="cell">
+          {cursor ? `dx ${fmtCoord(cursor.x)}  dy ${fmtCoord(cursor.y)}` : 'dx — dy —'}
+        </span>
+        <span className="cell grow">{activeLayer}</span>
+        <span className="cell">{unitLabel}</span>
       </div>
     </div>
   );

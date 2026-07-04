@@ -135,5 +135,5 @@ export const PCB_FILTER_CATS: [string, string][] = [
   ['vias', 'Vias'], ['zones', 'Zones'],
   ['pads', 'Pads'], ['graphics', 'Graphics'],
   ['keepouts', 'Rule Areas'], ['dimensions', 'Dimensions'],
-  ['otherItems', 'Other items'],
+  ['otherItems', 'Other items'], ['points', 'Points'],
 ];

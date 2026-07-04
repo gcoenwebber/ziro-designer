@@ -64,6 +64,8 @@ export const TOP_TOOLBAR: ToolEntry[] = [
   { id: 'assignFootprints', icon: 'assignFp', title: 'Assign footprints' },
   { id: 'editSymbolFields', icon: 'fields', title: 'Edit symbol fields' },
   { id: 'bom', icon: 'bom', title: 'Generate BOM' },
+  sep,
+  { id: 'showPcbNew', icon: 'showPcbNew', title: 'Open PCB in board editor' },
 ];
 
 /** Left vertical toolbar (display / edit options — mostly toggles). */
