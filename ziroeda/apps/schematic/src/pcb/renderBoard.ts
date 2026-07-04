@@ -321,7 +321,12 @@ function addText(map: Map<number, Path2D>, t: PcbTextItem): void {
   const size = t.size.y;
   if (size <= 0 || t.text === '') return;
   const { strokes, width } = layoutText(t.text, size);
-  const thickness = Math.max(t.thickness ?? Math.round(size * 0.15), 1);
+  // EDA_TEXT::GetEffectiveTextPenWidth (eda_text.cpp): file thickness, else
+  // bold→size/5 / normal→size/8, then clamped to ≤ size·0.25. A too-thin pen
+  // is exactly what made board text read like a plain font instead of the
+  // stroke font, so this clamp restores the proper Newstroke weight.
+  const raw = t.thickness && t.thickness > 1 ? t.thickness : penForText(size, !!t.bold);
+  const thickness = Math.max(Math.min(raw, size * 0.25), 1);
   // PCB text anchors CENTER/CENTER by default (EDA_TEXT on boards).
   const justify = t.justify ?? [];
   const hAlign = justify.includes('left') ? 'left' : justify.includes('right') ? 'right' : 'center';
@@ -332,10 +337,11 @@ function addText(map: Map<number, Path2D>, t: PcbTextItem): void {
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
   const mir = t.mirror ? -1 : 1;
+  const tilt = t.italic ? ITALIC_TILT : 0;
   const path = pathIn(map, thickness);
   for (const stroke of strokes) {
     for (let i = 0; i < stroke.length; i++) {
-      const gx = (stroke[i]!.x + offX) * mir;
+      const gx = (stroke[i]!.x - stroke[i]!.y * tilt + offX) * mir;
       const gy = stroke[i]!.y + offY;
       const x = t.at.x + gx * cos - gy * sin;
       const y = t.at.y + gx * sin + gy * cos;
@@ -527,7 +533,13 @@ export interface SheetInfo {
   fileName?: string;
 }
 
-/** Stroke a Newstroke string left/right/centre-justified at (x, y) baseline. */
+// eda_text.cpp / gr_text.cpp EDA_TEXT pen: bold = size/5, normal = size/8,
+// clamped to ≤ size·0.25 (ClampTextPenSize). glyph.cpp ITALIC_TILT = 1/8.
+const penForText = (size: number, bold: boolean): number =>
+  Math.min(bold ? size / 5 : size / 8, size * 0.25);
+const ITALIC_TILT = 1 / 8;
+
+/** Stroke a Newstroke string at (x, y) baseline, with optional bold/italic. */
 function sheetText(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -535,17 +547,19 @@ function sheetText(
   y: number,
   size: number,
   justify: 'left' | 'center' = 'left',
+  bold = false,
+  italic = false,
 ): void {
   if (!text) return;
   const { strokes, width } = layoutText(text, size);
   const offX = justify === 'center' ? -width / 2 : 0;
-  // Normal-weight stroke pen ≈ height/8 (EDA_TEXT default), so worksheet text
-  // reads at the right weight instead of the 0.15 mm border pen.
-  ctx.lineWidth = size / 8;
+  ctx.lineWidth = penForText(size, bold);
+  const tilt = italic ? ITALIC_TILT : 0;
   ctx.beginPath();
   for (const stroke of strokes) {
     for (let i = 0; i < stroke.length; i++) {
-      const px = x + stroke[i]!.x + offX;
+      // Italic shear: y is negative above the baseline, so tops lean right.
+      const px = x + stroke[i]!.x - stroke[i]!.y * tilt + offX;
       const py = y + stroke[i]!.y;
       if (i === 0) ctx.moveTo(px, py);
       else ctx.lineTo(px, py);
@@ -607,17 +621,20 @@ export function drawDrawingSheet(ctx: CanvasRenderingContext2D, info: SheetInfo)
   ctx.moveTo(rx(26), ry(8.5)); ctx.lineTo(rx(26), ry(2));
   ctx.stroke();
 
+  // Field layout + weights are the KiCad default worksheet
+  // (drawing_sheet_default_description.cpp): Title is bold italic, Rev and
+  // Company are bold, the rest normal.
   const tb = info.titleBlock;
   const t15 = 1.5 * MM;
   sheetText(ctx, `Date: ${tb?.date ?? ''}`, rx(87), ry(6.9), t15);
   sheetText(ctx, 'ZiroEDA', rx(109), ry(4.1), t15);
-  sheetText(ctx, `Rev: ${tb?.rev ?? ''}`, rx(24), ry(6.9), t15);
+  sheetText(ctx, `Rev: ${tb?.rev ?? ''}`, rx(24), ry(6.9), t15, 'left', true);
   sheetText(ctx, `Size: ${info.paper ?? ''}`, rx(109), ry(6.9), t15);
   sheetText(ctx, 'Id: 1/1', rx(24), ry(4.1), t15);
-  sheetText(ctx, `Title: ${tb?.title ?? ''}`, rx(109), ry(10.7), 2 * MM);
+  sheetText(ctx, `Title: ${tb?.title ?? ''}`, rx(109), ry(10.7), 2 * MM, 'left', true, true);
   sheetText(ctx, `File: ${info.fileName ?? ''}`, rx(109), ry(14.3), t15);
   sheetText(ctx, 'Sheet: /', rx(109), ry(17), t15);
-  sheetText(ctx, tb?.company ?? '', rx(109), ry(20), t15);
+  sheetText(ctx, tb?.company ?? '', rx(109), ry(20), t15, 'left', true);
 }
 
 /**
