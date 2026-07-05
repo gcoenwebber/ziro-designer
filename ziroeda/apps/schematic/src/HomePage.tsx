@@ -100,10 +100,65 @@ const EMPTY_PCB = `(kicad_pcb (version 20241229) (generator "ziroeda")
 
 const treeIconFor = (file: string): string =>
   /\.kicad_pro$/i.test(file) ? 'project_kicad'
-  : /\.kicad_sch$/i.test(file) ? 'icon_eeschema_24'
+  : /\.kicad_sch$/i.test(file) ? 'icon_eeschema_16'
+  : /\.kicad_pcb$/i.test(file) ? 'icon_pcbnew_16'
   : /\.kicad_sym$/i.test(file) ? 'library'
-  : /\.kicad_pcb$/i.test(file) ? 'icon_pcbnew_24'
+  : /\.kicad_mod$/i.test(file) ? 'module'
+  : /\.(step|stp|wrl|wings)$/i.test(file) ? 'three_d'
+  : /\.pdf$/i.test(file) ? 'file_pdf'
+  : /\.(txt|md|rpt|net)$/i.test(file) ? 'datasheet'
   : 'directory_browser';
+
+/** A node in the project's on-disk directory tree. */
+interface DirNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  file?: PickedHomeFile;
+  children: DirNode[];
+}
+
+// Files KiCad's project tree hides (config/lock/cache/backup and dotfiles).
+const isHiddenFile = (base: string): boolean =>
+  base.startsWith('.') ||
+  /\.(kicad_pro|kicad_prl|lck)$/i.test(base) ||
+  base === 'fp-lib-table' ||
+  base === 'sym-lib-table' ||
+  /-backups?$/i.test(base);
+
+/**
+ * Reconstruct the on-disk folder hierarchy from the picked files' relative
+ * paths so the tree mirrors KiCad's project window — footprint/3D libraries
+ * (CM5IO.pretty, 3d_lib, *.3dshapes) stay inside collapsible folders instead
+ * of flooding the list. `stripPrefix` removes the picked folder's own name.
+ */
+function buildDirTree(files: PickedHomeFile[], stripPrefix: string): DirNode {
+  const root: DirNode = { name: '', path: '', isDir: true, children: [] };
+  for (const f of files) {
+    let rel = f.name.replace(/\\/g, '/');
+    if (stripPrefix && rel.startsWith(stripPrefix)) rel = rel.slice(stripPrefix.length);
+    rel = rel.replace(/^\/+/, '');
+    const parts = rel.split('/').filter(Boolean);
+    let cur = root;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]!;
+      const isLast = i === parts.length - 1;
+      let child = cur.children.find((c) => c.name === part);
+      if (!child) {
+        child = { name: part, path: (cur.path ? cur.path + '/' : '') + part, isDir: !isLast, children: [] };
+        cur.children.push(child);
+      }
+      if (isLast) { child.isDir = false; child.file = f; }
+      cur = child;
+    }
+  }
+  const sortRec = (n: DirNode): void => {
+    n.children.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
+    n.children.forEach(sortRec);
+  };
+  sortRec(root);
+  return root;
+}
 
 /**
  * KiCad-style project manager: open a project folder, see its files in the
@@ -124,6 +179,8 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, initialFil
   const [picked, setPicked] = useState<PickedHomeFile[] | null>(initialFiles ?? null);
   // Saved projects (IndexedDB) — the offline half of cloud persistence.
   const [saved, setSaved] = useState<ProjectMeta[]>([]);
+  // Expanded directory-tree folder paths (collapsed by default, like KiCad).
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const refreshSaved = (): void => { if (storageAvailable()) void listProjects().then(setSaved); };
   useEffect(refreshSaved, []);
 
@@ -193,15 +250,22 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, initialFil
   // cancel falls back to the classic webkitdirectory input, which has no such
   // blocklist. Multi-file selection and folder drag-and-drop cover the rest.
   const openProjectPicker = async (): Promise<void> => {
-    const w = window as unknown as { showDirectoryPicker?: () => Promise<AsyncIterable<[string, { kind: string; getFile?: () => Promise<File> }]> & { values: () => AsyncIterable<{ kind: string; name: string; getFile: () => Promise<File> }> }> };
+    interface DirHandle { values: () => AsyncIterable<FsEntry> }
+    interface FsEntry { kind: string; name: string; getFile: () => Promise<File>; values: () => AsyncIterable<FsEntry> }
+    const w = window as unknown as { showDirectoryPicker?: () => Promise<DirHandle> };
     if (w.showDirectoryPicker) {
       try {
         const dir = await w.showDirectoryPicker();
         const files: { name: string; textOf: () => Promise<string> }[] = [];
-        for await (const entry of dir.values()) {
-          if (entry.kind !== 'file') continue;
-          files.push({ name: entry.name, textOf: async () => (await entry.getFile()).text() });
-        }
+        // Recurse so footprint/3D-model subfolders (CM5IO.pretty, 3d_lib …)
+        // populate the directory tree, not just the top level.
+        const walkHandle = async (handle: DirHandle, prefix: string, depth: number): Promise<void> => {
+          for await (const entry of handle.values()) {
+            if (entry.kind === 'file') files.push({ name: prefix + entry.name, textOf: async () => (await entry.getFile()).text() });
+            else if (entry.kind === 'directory' && depth < 6) await walkHandle(entry, `${prefix}${entry.name}/`, depth + 1);
+          }
+        };
+        await walkHandle(dir, '', 0);
         await ingest(files);
         return;
       } catch (e) {
@@ -228,18 +292,19 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, initialFil
       next();
     });
     const files: { name: string; textOf: () => Promise<string> }[] = [];
-    const walk = async (entry: Entry, depth: number): Promise<void> => {
+    // Keep the relative path (prefix) so the directory tree reconstructs folders.
+    const walk = async (entry: Entry, prefix: string, depth: number): Promise<void> => {
       if (entry.isFile) {
         const file = await new Promise<File>((res, rej) => entry.file(res, rej)).catch(() => null);
-        if (file) files.push({ name: file.name, textOf: () => file.text() });
-      } else if (entry.isDirectory && depth < 3) {
-        for (const child of await readAll(entry)) await walk(child, depth + 1);
+        if (file) files.push({ name: prefix + file.name, textOf: () => file.text() });
+      } else if (entry.isDirectory && depth < 6) {
+        for (const child of await readAll(entry)) await walk(child, `${prefix}${entry.name}/`, depth + 1);
       }
     };
     const entries = [...e.dataTransfer.items]
       .map((i) => i.webkitGetAsEntry() as unknown as Entry | null)
       .filter((x): x is Entry => !!x);
-    for (const en of entries) await walk(en, 0);
+    for (const en of entries) await walk(en, '', 0);
     await ingest(files);
   };
 
@@ -260,14 +325,6 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, initialFil
     const root = findRootFile(docs, proFile ? basename(proFile.name) : undefined);
     return { root, tree: buildSheetTree(docs, root) };
   }, [picked, proFile]);
-
-  // Files other than the schematics (they nest under the root instead).
-  const otherFiles = useMemo(() => {
-    if (!picked) return [];
-    return picked
-      .filter((f) => !/\.(kicad_sch|kicad_pro)$/i.test(basename(f.name)))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [picked]);
 
   // Schematics not reachable from the root (e.g. the root sheet itself is
   // missing from the folder) — still listed so nothing silently disappears.
@@ -319,6 +376,57 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, initialFil
       ))}
     </div>
   );
+
+  // The on-disk directory tree (folders collapsible), so footprint/3D libraries
+  // don't flood the list. Schematics are shown via the hierarchy above, so they
+  // (and hidden config files) are omitted here.
+  const dirRoot = useMemo<DirNode | null>(() => {
+    if (!picked) return null;
+    const anyPath = (proFile?.name ?? picked[0]?.name ?? '').replace(/\\/g, '/');
+    const firstSeg = anyPath.includes('/') ? anyPath.split('/')[0] + '/' : '';
+    const strip = firstSeg && picked.every((f) => f.name.replace(/\\/g, '/').startsWith(firstSeg)) ? firstSeg : '';
+    return buildDirTree(picked, strip);
+  }, [picked, proFile]);
+
+  const toggleDir = (path: string): void =>
+    setExpanded((prev) => { const n = new Set(prev); if (n.has(path)) n.delete(path); else n.add(path); return n; });
+
+  const renderDir = (node: DirNode, depth: number): JSX.Element | null => {
+    if (node.isDir) {
+      const kids = node.children.filter((c) => c.isDir || (!/\.kicad_sch$/i.test(c.name) && !isHiddenFile(c.name)));
+      if (kids.length === 0) return null;
+      const open = expanded.has(node.path);
+      return (
+        <div key={node.path}>
+          <div
+            className="ze-tree-item"
+            style={{ paddingLeft: 8 + depth * 16, cursor: 'pointer' }}
+            onClick={() => toggleDir(node.path)}
+            title={node.path}
+          >
+            <span className="twisty">{open ? '▾' : '▸'}</span>
+            <TreeIcon name={open ? 'directory_open' : 'directory'} />
+            <span>{node.name}</span>
+          </div>
+          {open && kids.map((c) => renderDir(c, depth + 1))}
+        </div>
+      );
+    }
+    if (/\.kicad_sch$/i.test(node.name) || isHiddenFile(node.name)) return null;
+    const isPcb = /\.kicad_pcb$/i.test(node.name);
+    return (
+      <div
+        key={node.path}
+        className="ze-tree-item"
+        style={{ paddingLeft: 8 + depth * 16 + 15, cursor: isPcb ? 'pointer' : 'default' }}
+        title={isPcb ? 'Open in the PCB Editor' : node.path}
+        onClick={isPcb && onOpenPcb && node.file ? () => onOpenPcb(node.file!, picked ?? undefined) : undefined}
+      >
+        <TreeIcon name={treeIconFor(node.name)} />
+        <span>{node.name}</span>
+      </div>
+    );
+  };
 
   // KiCad's project-manager File menu (the working subset).
   const menus: Menu[] = [
@@ -410,22 +518,8 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, initialFil
                     <span>{b}</span>
                   </div>
                 ))}
-                {/* remaining project files (pcb, dru, readme, …) */}
-                {otherFiles.map((f) => {
-                  const isPcb = /\.kicad_pcb$/i.test(f.name);
-                  return (
-                    <div
-                      key={f.name}
-                      className="ze-tree-item"
-                      style={{ paddingLeft: 24, cursor: isPcb ? 'pointer' : 'default' }}
-                      title={isPcb ? 'Open in the PCB Editor' : f.name}
-                      onClick={isPcb && onOpenPcb ? () => onOpenPcb(f, picked ?? undefined) : undefined}
-                    >
-                      <TreeIcon name={treeIconFor(f.name)} />
-                      <span>{basename(f.name)}</span>
-                    </div>
-                  );
-                })}
+                {/* remaining project files & folders, mirroring the directory */}
+                {dirRoot?.children.map((c) => renderDir(c, 1))}
               </>
             ) : (
               <>

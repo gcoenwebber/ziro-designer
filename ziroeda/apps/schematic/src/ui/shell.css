@@ -2,13 +2,13 @@
    KiCad's dark mode. */
 :root {
   --chrome-bg: #2f3136;
-  --chrome-bg2: #292b2f;
-  --chrome-border: #1c1d20;
-  --chrome-fg: #d7d8da;
-  --chrome-hover: #3a4d63;
-  --chrome-active: #2f547e;
+  --chrome-bg2: #24262a;
+  --chrome-border: #17181b;
+  --chrome-fg: #e6e8eb;
+  --chrome-hover: #37506b;
+  --chrome-active: #1b598f;
   --chrome-active-border: #4a86c5;
-  --panel-bg: #2b2d31;
+  --panel-bg: #2a2c30;
   --panel-header: #34363b;
 }
 
@@ -116,12 +116,18 @@ html, body { background: var(--chrome-bg2); }
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 4px;
+  padding: 3px 5px;
   border-radius: 3px;
   cursor: default;
+  font-size: 13px;
+  color: #dfe2e6;
+  white-space: nowrap;
 }
+.ze-tree-item img { width: 18px; height: 18px; flex: 0 0 auto; }
 .ze-tree-item:hover { background: var(--chrome-hover); }
-.ze-tree-item.active { background: var(--chrome-active); }
+.ze-tree-item.active { background: var(--chrome-active); color: #fff; }
+.ze-tree-item.root { font-weight: 700; color: #fff; }
+.ze-tree-item .twisty { width: 12px; flex: 0 0 auto; text-align: center; color: #9aa0a6; font-size: 10px; }
 
 .ze-prop-row { display: flex; justify-content: space-between; padding: 3px 2px; border-bottom: 1px solid var(--chrome-border); }
 .ze-prop-row .k { color: #9a9ca0; }
@@ -206,11 +212,6 @@ html, body { background: var(--chrome-bg2); }
 .ze-mgrbar button:hover { background: var(--chrome-hover); border-color: var(--chrome-border); }
 .ze-mgrbar img { width: 22px; height: 22px; }
 .ze-mgrbar .sep { width: 22px; height: 1px; background: var(--chrome-border); margin: 3px 0; }
-
-/* Project file tree */
-.ze-tree-item img { width: 18px; height: 18px; flex: 0 0 auto; }
-.ze-tree-item.root { font-weight: 700; }
-.ze-tree-item .twisty { width: 12px; display: inline-block; color: #9a9ca0; flex: 0 0 auto; }
 
 /* Editor left dock: stacked Properties / Hierarchy / Selection Filter */
 .ze-leftdock { display: flex; flex-direction: column; width: 240px; border-right: 1px solid var(--chrome-border); }
