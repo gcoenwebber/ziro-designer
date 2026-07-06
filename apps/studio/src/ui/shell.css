@@ -4,7 +4,7 @@
   --chrome-bg: #2f3136;
   --chrome-bg2: #24262a;
   --chrome-border: #17181b;
-  --chrome-fg: #e6e8eb;
+  --chrome-fg: #ffffff;
   --chrome-hover: #37506b;
   --chrome-active: #1b598f;
   --chrome-active-border: #4a86c5;
@@ -120,7 +120,7 @@ html, body { background: var(--chrome-bg2); }
   border-radius: 3px;
   cursor: default;
   font-size: 13px;
-  color: #dfe2e6;
+  color: #ffffff;
   white-space: nowrap;
 }
 .ze-tree-item img { width: 18px; height: 18px; flex: 0 0 auto; }
