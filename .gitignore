@@ -1,2 +1,9 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+coverage/
+
+# Local KiCad source/symbol clones used only as porting references
 kicad-src/
 kicad-symbols-src/
