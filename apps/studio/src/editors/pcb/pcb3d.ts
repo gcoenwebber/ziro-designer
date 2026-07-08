@@ -10,17 +10,12 @@
  * 2D is what you see in 3D. Outline chaining/triangulation lives in boardOutline.ts.
  */
 
-import { buildScene, drawBoard, DEFAULT_DRAW_OPTIONS, type PcbDrawOptions } from './renderBoard.js';
+import { buildScene } from './renderBoard.js';
 import { buildBoardOutline } from './boardOutline.js';
+import { renderRealisticFace } from './pcb3dFace.js';
 import type { Board } from '@ziroeda/core';
 
 const MM = 10000;
-
-// Front/back layer sets for the two board faces (the visually dominant layers).
-const FRONT_LAYERS = ['Edge.Cuts', 'F.Cu', 'F.Mask', 'F.Paste', 'F.SilkS'];
-const BACK_LAYERS = ['Edge.Cuts', 'B.Cu', 'B.Mask', 'B.Paste', 'B.SilkS'];
-
-interface Face { canvas: HTMLCanvasElement; }
 
 interface BBox { minX: number; minY: number; maxX: number; maxY: number; }
 
@@ -47,31 +42,6 @@ function edgeBBox(board: Board, fallback: BBox): BBox {
     for (const p of s.pts ?? []) inc(p.x, p.y);
   }
   return minX < maxX ? { minX, minY, maxX, maxY } : fallback;
-}
-
-/** Render one board face to an offscreen texture canvas (top-down ortho). */
-function renderFace(board: Board, box: BBox, layers: string[], mirror: boolean, texSize: number): Face | null {
-  const scene = buildScene(board);
-  const { minX, minY, maxX, maxY } = box;
-  const w = maxX - minX;
-  const h = maxY - minY;
-  const span = Math.max(w, h);
-  const canvas = document.createElement('canvas');
-  canvas.width = texSize;
-  canvas.height = texSize;
-  const scale = texSize / span;
-  // Centre the board in the square texture; mirror X for the back face so the
-  // texture reads correctly when the slab is flipped over.
-  const cx = (minX + maxX) / 2;
-  const cy = (minY + maxY) / 2;
-  const view = mirror
-    ? { scale: -scale, tx: texSize / 2 + cx * scale, ty: texSize / 2 - cy * scale }
-    : { scale, tx: texSize / 2 - cx * scale, ty: texSize / 2 - cy * scale };
-  const opts: PcbDrawOptions = { ...DEFAULT_DRAW_OPTIONS, drawingSheet: false, zoneOpacity: 1, fpText: false, fpValues: false, fpReferences: false };
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-  drawBoard(ctx, scene, view as { scale: number; tx: number; ty: number }, new Set(layers), texSize, texSize, opts);
-  return { canvas };
 }
 
 const VERT = `
@@ -162,8 +132,10 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
   const th = (board.thickness ?? 1.6 * MM) / MM;
   const half = Math.max(bw, bh) / 2;
 
-  const front = renderFace(board, box, FRONT_LAYERS, false, 1024);
-  const back = renderFace(board, box, BACK_LAYERS, true, 1024);
+  // Higher-res textures (2048) than before — the old 1024 looked blurry on
+  // larger boards. Realistic KiCad-style materials, not the 2D editor theme.
+  const front = renderRealisticFace(board, box, 'front', 2048);
+  const back = renderRealisticFace(board, box, 'back', 2048);
   if (!front || !back) return null;
 
   const canvas = document.createElement('canvas');
@@ -237,8 +209,8 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
     gl.generateMipmap(gl.TEXTURE_2D);
     return t;
   };
-  const frontTex = mkTex(front.canvas);
-  const backTex = mkTex(back.canvas);
+  const frontTex = mkTex(front);
+  const backTex = mkTex(back);
 
   const aPos = gl.getAttribLocation(prog, 'aPos');
   const aUV = gl.getAttribLocation(prog, 'aUV');
