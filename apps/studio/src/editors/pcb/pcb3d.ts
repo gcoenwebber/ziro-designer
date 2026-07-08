@@ -95,11 +95,14 @@ uniform int uUseTex;
 uniform vec3 uColor;
 void main() {
   vec3 base = uUseTex == 1 ? texture2D(uTex, vUV).rgb : uColor;
-  // simple hemispheric + key light
+  // KiCad-style lighting: a camera-ish key light + a fill from below plus a
+  // strong hemispheric ambient, so the light background doesn't leave the board
+  // looking flat/dark. (render_3d_opengl uses several lights + ambient.)
   vec3 n = normalize(vNormal);
-  float key = max(dot(n, normalize(vec3(0.4, 0.6, 1.0))), 0.0);
-  float amb = 0.55;
-  gl_FragColor = vec4(base * (amb + 0.6 * key), 1.0);
+  float key = max(dot(n, normalize(vec3(0.35, 0.5, 1.0))), 0.0);
+  float fill = max(dot(n, normalize(vec3(-0.3, -0.4, -0.6))), 0.0);
+  float amb = 0.62;
+  gl_FragColor = vec4(base * (amb + 0.5 * key + 0.14 * fill), 1.0);
 }`;
 
 function compile(gl: WebGLRenderingContext, type: number, src: string): WebGLShader {
@@ -165,8 +168,12 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
   canvas.style.width = '100%';
   canvas.style.height = '100%';
   canvas.style.display = 'block';
+  // KiCad's 3D background is a vertical gradient (board_adapter g_DefaultBackground
+  // Top/Bot): light blue-grey at the top → medium blue-grey at the bottom. The
+  // canvas clears transparent so this CSS gradient shows through around the board.
+  canvas.style.background = 'linear-gradient(180deg, rgb(204,204,230) 0%, rgb(102,102,128) 100%)';
   container.appendChild(canvas);
-  const gl = canvas.getContext('webgl', { antialias: true, alpha: false });
+  const gl = canvas.getContext('webgl', { antialias: true, alpha: true, premultipliedAlpha: false });
   if (!gl) { container.removeChild(canvas); return null; }
 
   const prog = gl.createProgram()!;
@@ -246,10 +253,11 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0, 1, 2, 0, 2, 3]), gl.STATIC_DRAW);
 
   gl.enable(gl.DEPTH_TEST);
-  gl.clearColor(0.05, 0.06, 0.09, 1);
+  gl.clearColor(0, 0, 0, 0); // transparent — the CSS gradient is the background
 
-  // orbit state
-  let yaw = 0, pitch = -0.5, dist = half * 3.2;
+  // orbit state. Default to KiCad's opening view: looking down onto the top
+  // (component) side, tilted so the board thickness/edges read as 3D.
+  let yaw = -0.5, pitch = 0.5, dist = half * 3.2;
   let dragging = false, lastX = 0, lastY = 0;
 
   const render = (): void => {
@@ -286,7 +294,7 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
         gl.uniform1i(uUseTex, 1);
       } else {
         gl.uniform1i(uUseTex, 0);
-        gl.uniform3f(uColor, 0.13, 0.28, 0.13); // FR4 edge green
+        gl.uniform3f(uColor, 0.4, 0.4, 0.5); // FR4 body edge (KiCad m_BoardBodyColor)
       }
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idx);
       gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
