@@ -304,24 +304,23 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, initialFil
     return basename(src).replace(/\.(kicad_pro|kicad_sch|kicad_pcb)$/i, '');
   };
 
-  // Read every picked file; all files show in the tree (like KiCad's project
-  // window), but only .kicad_sch/.kicad_pro/.kicad_pcb contents are read. The
-  // project is persisted to IndexedDB so it survives a reload with no login.
+  // Read the contents of *every* picked file — not just the KiCad documents —
+  // so the whole project (footprint/symbol libs, net/report/text files, etc.)
+  // survives a save, archive, and reopen instead of collapsing to sch+pcb. The
+  // storage layer gzips text ~10x, so keeping the libs is cheap. The project is
+  // persisted to IndexedDB so it survives a reload with no login.
   const ingest = async (files: { name: string; textOf: () => Promise<string> }[], persist = true): Promise<void> => {
     const out: PickedHomeFile[] = [];
     for (const f of files) {
       const base = f.name.split('/').pop()!;
       if (base.startsWith('.')) continue;
-      out.push({
-        name: f.name,
-        text: /\.(kicad_sch|kicad_pro|kicad_pcb)$/i.test(base) ? await f.textOf() : '',
-      });
+      out.push({ name: f.name, text: await f.textOf() });
     }
     if (out.length === 0) return;
     setPicked(out);
     if (persist && storageAvailable()) {
       try {
-        // Store only the files that carry content (the ones we can reopen).
+        // Persist every file we read (empty files carry no content to reopen).
         const withText = out.filter((f) => f.text !== '');
         if (withText.length > 0) {
           const name = projectNameOf(out);
