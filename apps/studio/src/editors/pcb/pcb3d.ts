@@ -59,13 +59,14 @@ const FRAG = `
 precision mediump float;
 varying vec3 vNormal;
 uniform vec3 uColor;
+uniform float uAlpha;
 uniform vec3 uLightDir;   // world-space direction to the camera (a headlight)
 void main() {
   // Headlight (like KiCad, whose key light tracks the camera): abs() so a thin
   // layer is lit from whichever side you're looking at, over a soft ambient.
   vec3 n = normalize(vNormal);
   float d = abs(dot(n, normalize(uLightDir)));
-  gl_FragColor = vec4(uColor * (0.5 + 0.6 * d), 1.0);
+  gl_FragColor = vec4(uColor * (0.5 + 0.6 * d), uAlpha);
 }`;
 
 function compile(gl: WebGLRenderingContext, type: number, src: string): WebGLShader {
@@ -110,6 +111,41 @@ const lookAt = (eye: number[], center: number[], up: number[]): Mat4 => {
   return o;
 };
 
+// --- SGI / Gavin Bell arcball trackball, ported from KiCad's
+// 3d_rendering/trackball.cpp so rotation feels exactly like KiCad: project the
+// two mouse points onto a virtual sphere (radius 0.8, hyperbolic falloff past
+// the edge) and rotate about the axis between them by the arc angle. This gives
+// fine-grained, direction-aware control — unlike a fixed-scale Euler nudge.
+const TB = 0.8;
+const tbProject = (x: number, y: number): number => {
+  const d = Math.hypot(x, y);
+  if (d < TB * 0.7071067811865476) return Math.sqrt(TB * TB - d * d); // inside sphere
+  const t = TB / 1.4142135623730951; // on hyperbola past the edge
+  return (t * t) / d;
+};
+// Column-major rotation matrix from a quaternion (x,y,z,w).
+const quatToMat = (x: number, y: number, z: number, w: number): Mat4 => new Float32Array([
+  1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0,
+  2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0,
+  2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0,
+  0, 0, 0, 1,
+]);
+// Rotation for a drag from (p1)→(p2), each normalised to [-1,1] screen space.
+const trackballMat = (p1x: number, p1y: number, p2x: number, p2y: number): Mat4 => {
+  if (p1x === p2x && p1y === p2y) return quatToMat(0, 0, 0, 1);
+  const p1: [number, number, number] = [p1x, p1y, tbProject(p1x, p1y)];
+  const p2: [number, number, number] = [p2x, p2y, tbProject(p2x, p2y)];
+  // Axis = p1 × p2 (KiCad reads its rot matrix transposed, so this matches the
+  // effective direction). Angle = 2·asin(|p1−p2| / 2r).
+  const a = [p1[1] * p2[2] - p1[2] * p2[1], p1[2] * p2[0] - p1[0] * p2[2], p1[0] * p2[1] - p1[1] * p2[0]];
+  const dx = p1[0] - p2[0], dy = p1[1] - p2[1], dz = p1[2] - p2[2];
+  const t = Math.min(1, Math.max(-1, Math.hypot(dx, dy, dz) / (2 * TB)));
+  const phi = 2 * Math.asin(t);
+  const al = Math.hypot(a[0]!, a[1]!, a[2]!) || 1;
+  const s = Math.sin(phi / 2);
+  return quatToMat((a[0]! / al) * s, (a[1]! / al) * s, (a[2]! / al) * s, Math.cos(phi / 2));
+};
+
 export interface Viewer3D { dispose: () => void; }
 
 /** Mount the 3D viewer into `container`; returns a disposer. */
@@ -149,17 +185,19 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
   const outline = buildBoardOutline(board, box);
   const geom = buildBoardGeom(board, box);
 
-  // sRGB material colours (approx KiCad board_adapter defaults).
+  // KiCad's exact 3D material colours (board_adapter.cpp defaults). The mask is
+  // translucent (alpha 0.83), so the FR4 body + copper show through it — that's
+  // the faintly see-through look of the board's centre.
   const C = {
-    fr4: [0.30, 0.34, 0.20] as const,     // board edge (FR4)
-    mask: [0.11, 0.42, 0.22] as const,    // soldermask
-    copper: [0.16, 0.50, 0.29] as const,  // copper under mask (faint traces)
-    gold: [0.80, 0.64, 0.36] as const,    // exposed copper (pads/vias)
-    silk: [0.93, 0.93, 0.93] as const,    // silkscreen
+    fr4: [0.40, 0.40, 0.50] as const,     // board body (FR4)
+    copper: [0.75, 0.61, 0.23] as const,  // copper (traces, under the mask)
+    mask: [0.08, 0.20, 0.14] as const,    // soldermask (translucent)
+    gold: [0.85, 0.68, 0.30] as const,    // exposed copper at openings (pads)
+    silk: [0.94, 0.94, 0.94] as const,    // silkscreen
   };
 
-  interface Group { verts: number[]; idx: number[]; color: readonly [number, number, number] }
-  const mkGroup = (color: readonly [number, number, number]): Group => ({ verts: [], idx: [], color });
+  interface Group { verts: number[]; idx: number[]; color: readonly [number, number, number]; alpha: number }
+  const mkGroup = (color: readonly [number, number, number], alpha = 1): Group => ({ verts: [], idx: [], color, alpha });
   // A flat mesh placed at height z with a ±Z normal (6 floats/vertex: pos, nrm).
   const addFlat = (g: Group, mesh: Mesh, z: number, nz: number): void => {
     const base = g.verts.length / 6;
@@ -168,18 +206,21 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
   };
   const outlineMesh: Mesh = { verts: outline.verts, tris: outline.tris };
 
-  // Stack heights just off each face (mm) so coplanar layers don't z-fight.
-  const zM = hz, zC = hz + 0.04, zP = hz + 0.08, zS = hz + 0.12;
+  // Stack heights just off each face (mm): FR4 body → copper → mask → pads → silk.
+  const zB = hz, zC = hz + 0.03, zM = hz + 0.06, zP = hz + 0.09, zS = hz + 0.12;
   const gWall = mkGroup(C.fr4);
-  const gMask = mkGroup(C.mask);
+  const gBody = mkGroup(C.fr4);
   const gCopper = mkGroup(C.copper);
+  const gMask = mkGroup(C.mask, 0.83);
   const gGold = mkGroup(C.gold);
   const gSilk = mkGroup(C.silk);
 
-  addFlat(gMask, outlineMesh, zM, 1);
-  addFlat(gMask, outlineMesh, -zM, -1);
+  addFlat(gBody, outlineMesh, zB, 1);
+  addFlat(gBody, outlineMesh, -zB, -1);
   addFlat(gCopper, geom.front.copper, zC, 1);
   addFlat(gCopper, geom.back.copper, -zC, -1);
+  addFlat(gMask, outlineMesh, zM, 1);
+  addFlat(gMask, outlineMesh, -zM, -1);
   addFlat(gGold, geom.front.pads, zP, 1);
   addFlat(gGold, geom.back.pads, -zP, -1);
   addFlat(gSilk, geom.front.silk, zS, 1);
@@ -198,13 +239,15 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
     }
   }
 
-  const groups = [gWall, gMask, gCopper, gGold, gSilk];
+  // Opaque layers first, then the translucent mask, then pads/silk on top.
+  const groups = [gWall, gBody, gCopper, gMask, gGold, gSilk];
 
   const aPos = gl.getAttribLocation(prog, 'aPos');
   const aNormal = gl.getAttribLocation(prog, 'aNormal');
   const uMVP = gl.getUniformLocation(prog, 'uMVP');
   const uModel = gl.getUniformLocation(prog, 'uModel');
   const uColor = gl.getUniformLocation(prog, 'uColor');
+  const uAlpha = gl.getUniformLocation(prog, 'uAlpha');
   const uLightDir = gl.getUniformLocation(prog, 'uLightDir');
 
   // Tessellated boards can exceed 65 k vertices, so use 32-bit indices when the
@@ -218,10 +261,15 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
     const ibo = gl.createBuffer()!;
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, uintOK ? new Uint32Array(g.idx) : new Uint16Array(g.idx), gl.STATIC_DRAW);
-    return { vbo, ibo, count: g.idx.length, color: g.color };
+    return { vbo, ibo, count: g.idx.length, color: g.color, alpha: g.alpha };
   });
 
   gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.BLEND);
+  // Blend RGB normally; keep dst alpha maxed so the board stays opaque to the
+  // page (only the cleared background shows the CSS gradient), not see-through
+  // to the browser behind the translucent mask.
+  gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   gl.clearColor(0, 0, 0, 0); // transparent — the CSS gradient is the background
 
   // ---- trackball camera: free 360° tumble (no clamp) + pan + zoom ----------
@@ -262,6 +310,7 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
       gl.enableVertexAttribArray(aNormal);
       gl.vertexAttribPointer(aNormal, 3, gl.FLOAT, false, 24, 12);
       gl.uniform3f(uColor, g.color[0], g.color[1], g.color[2]);
+      gl.uniform1f(uAlpha, g.alpha);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.ibo);
       gl.drawElements(gl.TRIANGLES, g.count, idxType, 0);
     });
@@ -277,15 +326,19 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
   };
   const onMove = (e: PointerEvent): void => {
     if (mode === 'none') return;
-    const dx = e.clientX - lastX, dy = e.clientY - lastY;
-    lastX = e.clientX; lastY = e.clientY;
     if (mode === 'rotate') {
-      // Left-multiply small screen-space rotations → free tumble, no gimbal clamp.
-      rot = mul(mul(rotX(dy * 0.01), rotY(dx * 0.01)), rot);
+      // KiCad trackball: normalise both points to [-1,1] in the canvas, rotate
+      // between them, and pre-multiply → grab-and-spin with KiCad's exact feel.
+      const r = canvas.getBoundingClientRect();
+      const W = r.width || 1, H = r.height || 1;
+      const nx = (px: number): number => (2 * (px - r.left) - W) / W;
+      const ny = (py: number): number => (H - 2 * (py - r.top)) / H;
+      rot = mul(trackballMat(nx(lastX), ny(lastY), nx(e.clientX), ny(e.clientY)), rot);
     } else {
       const k = dist / (canvas.clientHeight || 1);
-      panX -= dx * k; panY += dy * k;
+      panX -= (e.clientX - lastX) * k; panY += (e.clientY - lastY) * k;
     }
+    lastX = e.clientX; lastY = e.clientY;
     requestRender();
   };
   const onUp = (e: PointerEvent): void => { mode = 'none'; try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ } };
