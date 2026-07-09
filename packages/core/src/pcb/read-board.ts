@@ -19,6 +19,7 @@ import { mmToIU } from '../units.js';
 import { arg, args, childNamed, childrenNamed, numArg, stringField, numberField } from '../sexpr/query.js';
 import type {
   Board,
+  Model3D,
   PadPrimitive,
   PadShape,
   PadType,
@@ -313,6 +314,7 @@ function readFootprint(item: SList): PcbFootprint | null {
     pads: [],
     shapes: [],
     texts: [],
+    models: [],
     uuid: uuidOf(item),
     source: item,
   };
@@ -322,6 +324,9 @@ function readFootprint(item: SList): PcbFootprint | null {
     if (h === 'pad') {
       const pad = readPad(child, t);
       if (pad) fp.pads.push(pad);
+    } else if (h === 'model') {
+      const m = readModel(child);
+      if (m) fp.models.push(m);
     } else if (h.startsWith('fp_') && h !== 'fp_text' && h !== 'fp_text_box') {
       const s = readShape(child, t);
       if (s) fp.shapes.push(s);
@@ -355,6 +360,29 @@ function readFootprint(item: SList): PcbFootprint | null {
     }
   }
   return fp;
+}
+
+// A footprint's `(model …)` 3D reference. Offset/scale/rotate stay in the file's
+// native units (mm, unitless, degrees) — the 3D viewer applies KiCad's transform.
+function readModel(item: SList): Model3D | null {
+  const path = arg(item, 0);
+  if (!path) return null;
+  const xyzOf = (node: SList | undefined, def: number): { x: number; y: number; z: number } => {
+    const inner = node ? childNamed(node, 'xyz') : undefined;
+    return {
+      x: inner ? (numArg(inner, 0) ?? def) : def,
+      y: inner ? (numArg(inner, 1) ?? def) : def,
+      z: inner ? (numArg(inner, 2) ?? def) : def,
+    };
+  };
+  const hideNode = childNamed(item, 'hide');
+  return {
+    path,
+    offset: xyzOf(childNamed(item, 'offset') ?? childNamed(item, 'at'), 0), // 'at' = legacy
+    scale: xyzOf(childNamed(item, 'scale'), 1),
+    rotate: xyzOf(childNamed(item, 'rotate'), 0),
+    hide: hideNode ? arg(hideNode, 0) !== 'no' : false,
+  };
 }
 
 function readZone(item: SList): PcbZone {

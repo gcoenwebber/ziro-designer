@@ -92,6 +92,18 @@ export interface PcbTextItem {
   source: SList;
 }
 
+/** A 3D model attached to a footprint — KiCad `(model path (offset)(scale)(rotate))`.
+ *  `path` usually starts with an env var like `${KICAD6_3DMODEL_DIR}/...` (the
+ *  installed library) or `${KIPRJMOD}/...` (project-local). Offset is in mm,
+ *  rotation in degrees per axis (KiCad applies it as -Z, -Y, -X), scale unitless. */
+export interface Model3D {
+  path: string;
+  offset: { x: number; y: number; z: number };
+  scale: { x: number; y: number; z: number };
+  rotate: { x: number; y: number; z: number };
+  hide?: boolean;
+}
+
 export interface PcbFootprint {
   lib: string;
   at: Vec2;
@@ -103,6 +115,8 @@ export interface PcbFootprint {
   pads: PcbPad[];
   shapes: PcbShape[];
   texts: PcbTextItem[];
+  /** 3D model references (rendered by the 3D viewer, resolved to hosted assets). */
+  models: Model3D[];
   uuid?: string;
   source: SList;
 }
