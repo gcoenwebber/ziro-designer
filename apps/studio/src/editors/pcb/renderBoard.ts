@@ -338,10 +338,14 @@ function addText(map: Map<number, Path2D>, t: PcbTextItem): void {
   const sin = Math.sin(rad);
   const mir = t.mirror ? -1 : 1;
   const tilt = t.italic ? ITALIC_TILT : 0;
+  // KiCad scales glyphs by width and height separately (eda_text.cpp writes
+  // "(size height width)"); layoutText uses height for both, so condense x by
+  // width/height for non-square text (e.g. a condensed board name).
+  const sx = size > 0 ? t.size.x / size : 1;
   const path = pathIn(map, thickness);
   for (const stroke of strokes) {
     for (let i = 0; i < stroke.length; i++) {
-      const gx = (stroke[i]!.x - stroke[i]!.y * tilt + offX) * mir;
+      const gx = ((stroke[i]!.x + offX) * sx - stroke[i]!.y * tilt) * mir;
       const gy = stroke[i]!.y + offY;
       const x = t.at.x + gx * cos - gy * sin;
       const y = t.at.y + gx * sin + gy * cos;
