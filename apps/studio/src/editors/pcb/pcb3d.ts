@@ -169,7 +169,7 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
   const outlineMesh: Mesh = { verts: outline.verts, tris: outline.tris };
 
   // Stack heights just off each face (mm) so coplanar layers don't z-fight.
-  const zM = hz, zC = hz + 0.02, zP = hz + 0.04, zS = hz + 0.06;
+  const zM = hz, zC = hz + 0.04, zP = hz + 0.08, zS = hz + 0.12;
   const gWall = mkGroup(C.fr4);
   const gMask = mkGroup(C.mask);
   const gCopper = mkGroup(C.copper);
@@ -242,7 +242,13 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     const eye = [panX, panY, dist];
-    const proj = perspective(Math.PI / 4, w / h, 0.05, dist * 10 + 100);
+    // Tight near/far around the board — a tiny near plane wastes almost all
+    // depth precision and makes the thin stacked layers z-fight/flicker. Keep
+    // near a healthy fraction of the camera distance (never clips the board,
+    // whose nearest point is ~dist - 1.41*half).
+    const near = Math.max(dist * 0.1, dist - half * 3);
+    const far = dist + half * 5;
+    const proj = perspective(Math.PI / 4, w / h, near, far);
     const mvp = mul(mul(proj, lookAt(eye, [panX, panY, 0], [0, 1, 0])), rot);
     gl.uniformMatrix4fv(uMVP, false, mvp);
     gl.uniformMatrix4fv(uModel, false, rot);
