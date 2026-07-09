@@ -15,6 +15,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { buildScene } from './renderBoard.js';
 import { buildBoardOutline } from './boardOutline.js';
 import { buildBoardGeom, boardHoles, type Mesh } from './boardGeom.js';
+import { mountComponents } from './component3d.js';
 import type { Board } from '@ziroeda/core';
 
 const MM = 10000;
@@ -180,6 +181,9 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
   const headlight = new THREE.DirectionalLight(0xffffff, 1.35);
   scene.add(headlight);
 
+  // Footprint 3D models (loaded async from the bundled/hosted library).
+  const disposeComponents = mountComponents(scene, board, box, hz, '/models3d');
+
   // ---- camera + KiCad-style trackball --------------------------------------
   const camera = new THREE.PerspectiveCamera(45, 1, Math.max(0.05, half * 0.02), half * 200);
   // Open looking down onto the top side, tilted so the edges/thickness read.
@@ -220,6 +224,7 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
     dispose: () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
+      disposeComponents();
       controls.dispose();
       for (const d of disposables) d.dispose();
       envTex.dispose();
