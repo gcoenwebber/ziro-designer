@@ -24,6 +24,8 @@ export interface ProjectMeta {
   name: string;
   createdAt: number;
   updatedAt: number;
+  /** Last time the project was opened (drives Recent Projects order). */
+  lastOpenedAt?: number;
   fileCount: number;
   bytes: number; // compressed size on disk
 }
@@ -33,6 +35,7 @@ interface StoredRecord {
   name: string;
   createdAt: number;
   updatedAt: number;
+  lastOpenedAt?: number;
   files: { name: string; gz: Uint8Array }[];
 }
 
@@ -107,7 +110,7 @@ export async function saveProject(name: string, files: StoredFile[], id?: string
     const existing = await tx<StoredRecord | undefined>('readonly', (s) => s.get(id));
     if (existing) createdAt = existing.createdAt;
   }
-  const record: StoredRecord = { id: pid, name, createdAt, updatedAt: now, files: gzFiles };
+  const record: StoredRecord = { id: pid, name, createdAt, updatedAt: now, lastOpenedAt: now, files: gzFiles };
   await tx('readwrite', (s) => s.put(record));
   return pid;
 }
@@ -121,10 +124,21 @@ export async function listProjects(): Promise<ProjectMeta[]> {
       name: r.name,
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
+      lastOpenedAt: r.lastOpenedAt,
       fileCount: r.files.length,
       bytes: r.files.reduce((n, f) => n + f.gz.byteLength, 0),
     }))
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+    // Recent = last opened (falls back to last saved for older records).
+    .sort((a, b) => (b.lastOpenedAt ?? b.updatedAt) - (a.lastOpenedAt ?? a.updatedAt));
+}
+
+/** Mark a project as just opened (reorders Recent without touching updatedAt,
+ *  so it doesn't trigger a needless cloud sync). */
+export async function touchOpened(id: string): Promise<void> {
+  const r = await tx<StoredRecord | undefined>('readonly', (s) => s.get(id));
+  if (!r) return;
+  r.lastOpenedAt = Date.now();
+  await tx('readwrite', (s) => s.put(r));
 }
 
 /** Load a project's files (decompressed), or null if it no longer exists. */

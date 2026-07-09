@@ -1,10 +1,14 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { LibSymbol } from '@ziroeda/core';
 import { HomePage } from './home/HomePage.js';
 import { SchematicEditor, type PickedFile } from './editors/schematic/SchematicEditor.js';
 import { PcbEditor } from './editors/pcb/PcbEditor.js';
 import { SymbolEditor } from './editors/symbol/SymbolEditor.js';
+import { storageAvailable, listProjects, loadProject } from './home/projectStore.js';
+import { saveSession, loadSession } from './home/session.js';
 import './ui/shell.css';
+
+const dec = new TextDecoder();
 
 const pcbBasename = (p: string): string => p.split('/').pop()!.split('\\').pop()!;
 
@@ -27,6 +31,38 @@ export function App(): JSX.Element {
   const [symMounted, setSymMounted] = useState(false);
   // "Add symbol to schematic": the symbol editor hands eeschema a symbol to place.
   const [placeRequest, setPlaceRequest] = useState<{ lib: LibSymbol; nonce: number } | null>(null);
+  // Restore the last view on reload: reopen the most-recently-opened project
+  // (top of Recent) into the saved view, so a refresh doesn't lose your work.
+  // Only block on restore if there's actually a non-home view to restore.
+  const [restoring, setRestoring] = useState(() => { const s = loadSession(); return !!(s && s.view !== 'home'); });
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current) return;
+    restored.current = true;
+    void (async () => {
+      try {
+        const s = loadSession();
+        if (!s || s.view === 'home' || !storageAvailable()) return;
+        const list = await listProjects();
+        const loaded = list[0] ? await loadProject(list[0].id) : null;
+        if (!loaded) return;
+        setProjectFiles(loaded.files.map((f) => ({ name: f.name, text: dec.decode(f.bytes) })));
+        setStartFile(s.startFile ?? null);
+        if (s.view === 'schematic') setSchMounted(true);
+        else if (s.view === 'pcb') setPcbMounted(true);
+        else if (s.view === 'symbols') setSymMounted(true);
+        setView(s.view);
+      } catch { /* fall back to home */ } finally {
+        setRestoring(false);
+      }
+    })();
+  }, []);
+
+  // Remember the current view (+ open sheet) so a reload can restore it.
+  useEffect(() => {
+    if (restoring) return;
+    saveSession({ view, startFile });
+  }, [view, startFile, restoring]);
 
   const pcbFile = useMemo<PickedFile | null>(
     () => standalonePcb ?? projectFiles?.find((f) => /\.kicad_pcb$/i.test(f.name)) ?? null,
@@ -49,6 +85,14 @@ export function App(): JSX.Element {
     setView('schematic');
     setPlaceRequest((prev) => ({ lib, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
+
+  if (restoring) {
+    return (
+      <div className="ze-app" style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div className="ze-loading-card"><span className="ze-spinner" /><span>Restoring your project…</span></div>
+      </div>
+    );
+  }
 
   if (view === 'home') {
     // Keep the open project visible in the manager tree on return from an editor.

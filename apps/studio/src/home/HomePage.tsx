@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { zipSync, unzipSync } from 'fflate';
 import { MenuBar, type Menu } from '../ui/MenuBar.js';
-import { storageAvailable, listProjects, saveProject, loadProject, deleteProject, type ProjectMeta } from './projectStore.js';
+import { storageAvailable, listProjects, saveProject, loadProject, deleteProject, touchOpened, type ProjectMeta } from './projectStore.js';
 import { useAuth } from '../auth/AuthProvider.js';
 import { syncAllProjects, pushProject, deleteCloudProject } from '../cloud/sync.js';
 import { LoadingOverlay, nextPaint } from '../ui/LoadingOverlay.js';
@@ -411,6 +411,8 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, onOpenSymb
     try {
       const loaded = await loadProject(id);
       if (loaded) setPicked(loaded.files.map((f) => ({ name: f.name, text: dec.decode(f.bytes), bytes: f.bytes })));
+      await touchOpened(id); // resurface in Recent (ordered by last opened)
+      refreshSaved();
     } finally {
       setLoading(null);
     }
