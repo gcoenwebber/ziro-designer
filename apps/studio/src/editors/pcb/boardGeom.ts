@@ -9,6 +9,7 @@
  * flipped) so pcb3d.ts can extrude/stack it. Text is handled separately.
  */
 import earcut from 'earcut';
+import polygonClipping from 'polygon-clipping';
 import { tessellateArc, type Board } from '@ziroeda/core';
 import { layoutText } from '../../common/strokeFont.js';
 
@@ -132,15 +133,52 @@ export function buildBoardGeom(board: Board, box: Box): BoardGeom {
   const side = (layer: string): SideGeom | null => (layer === 'F.Cu' ? front : layer === 'B.Cu' ? back : null);
   const silkSide = (layer: string): SideGeom | null => (layer === 'F.SilkS' ? front : layer === 'B.SilkS' ? back : null);
 
-  // Tracks (segments) and arc tracks → copper stadiums.
-  for (const t of board.tracks) { const s = side(t.layer); if (s) poly3d(s.copper, stadium(t.start, t.end, t.width)); }
+  // Every drill (vias + through-hole pads), in IU — subtracted from copper so a
+  // trace/zone connecting to a hole doesn't show inside the see-through drill.
+  const drills = board.vias.map((v) => ({ cx: v.at.x, cy: v.at.y, r: v.drill / 2 }));
+  for (const fp of board.footprints) for (const pad of fp.pads) if (pad.drill) drills.push({ cx: pad.at.x, cy: pad.at.y, r: Math.min(pad.drill.w, pad.drill.h) / 2 });
+  const drillRing = (d: { cx: number; cy: number; r: number }): [number, number][] => {
+    const n = Math.max(12, Math.min(48, Math.round((d.r / MM) * 120)));
+    const ring: [number, number][] = [];
+    for (let i = 0; i <= n; i++) { const a = (2 * Math.PI * i) / n; ring.push([d.cx + d.r * Math.cos(a), d.cy + d.r * Math.sin(a)]); }
+    return ring;
+  };
+  // Add a MultiPolygon (IU) to a mesh, triangulated with any holes.
+  const addMulti = (mesh: Mesh, mp: [number, number][][][]): void => {
+    for (const poly of mp) {
+      const rings = poly.map((ring) => ring.map(([x, y]) => to3d({ x, y })));
+      const flat: number[] = [];
+      const holeIdx: number[] = [];
+      rings.forEach((ring, ri) => { if (ri > 0) holeIdx.push(flat.length / 2); for (const p of ring) flat.push(p.x, p.y); });
+      const t = earcut(flat, holeIdx.length ? holeIdx : undefined);
+      const base = mesh.verts.length;
+      for (const ring of rings) for (const p of ring) mesh.verts.push(p);
+      for (const i of t) mesh.tris.push(base + i);
+    }
+  };
+  // Copper polygon with any overlapping drills subtracted (Clipper-style, like KiCad).
+  const addCopper = (mesh: Mesh, loopIU: Pt[]): void => {
+    let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+    for (const p of loopIU) { if (p.x < minx) minx = p.x; if (p.x > maxx) maxx = p.x; if (p.y < miny) miny = p.y; if (p.y > maxy) maxy = p.y; }
+    const hits = drills.filter((d) => d.cx + d.r >= minx && d.cx - d.r <= maxx && d.cy + d.r >= miny && d.cy - d.r <= maxy);
+    if (hits.length === 0) { poly3d(mesh, loopIU); return; }
+    try {
+      const sr = loopIU.map((p) => [p.x, p.y] as [number, number]);
+      sr.push(sr[0]!); // close ring
+      const result = polygonClipping.difference([[sr]], ...hits.map((d) => [[drillRing(d)]] as [number, number][][][]));
+      addMulti(mesh, result as [number, number][][][]);
+    } catch { poly3d(mesh, loopIU); }
+  };
+
+  // Tracks (segments) and arc tracks → copper stadiums (drills cut out).
+  for (const t of board.tracks) { const s = side(t.layer); if (s) addCopper(s.copper, stadium(t.start, t.end, t.width)); }
   for (const a of board.arcs) {
     const s = side(a.layer); if (!s) continue;
     const pline = tessellateArc(a.start, a.mid, a.end);
-    for (let i = 0; i + 1 < pline.length; i++) poly3d(s.copper, stadium(pline[i]!, pline[i + 1]!, a.width));
+    for (let i = 0; i + 1 < pline.length; i++) addCopper(s.copper, stadium(pline[i]!, pline[i + 1]!, a.width));
   }
-  // Zone fills → copper polygons.
-  for (const z of board.zones) for (const f of z.fills) { const s = side(f.layer); if (s) for (const poly of f.polys) poly3d(s.copper, poly); }
+  // Zone fills → copper polygons (drills cut out).
+  for (const z of board.zones) for (const f of z.fills) { const s = side(f.layer); if (s) for (const poly of f.polys) addCopper(s.copper, poly); }
   // Vias → copper annulus (drill cut out) on both sides.
   for (const v of board.vias) {
     const ring = disc(v.at.x, v.at.y, v.size / 2), hole = disc(v.at.x, v.at.y, v.drill / 2);
