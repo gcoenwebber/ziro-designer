@@ -315,6 +315,8 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, onOpenSymb
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // Selected tree row (single click). Double click opens — like KiCad's tree.
   const [selected, setSelected] = useState<string | null>(null);
+  // Whether the project root node is expanded (its twisty collapses the tree).
+  const [rootOpen, setRootOpen] = useState(true);
   // New Project dialog (KiCad's File > New Project name prompt).
   const [newName, setNewName] = useState<string | null>(null);
   // Project-tree pane width (px), draggable like KiCad's wxAUI sash.
@@ -765,14 +767,22 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, onOpenSymb
           <div className="ze-panel-body">
             {picked ? (
               <>
-                {/* project root (.kicad_pro), bold like KiCad's tree root */}
-                <div className="ze-tree-item root active">
-                  <span className="twisty expandable open" />
+                {/* project root (.kicad_pro): bold, selectable, and its twisty
+                    collapses the whole tree — like KiCad's tree root. */}
+                <div
+                  className={`ze-tree-item root${selected === ' root' ? ' active' : ''}`}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => setSelected(' root')}
+                >
+                  <span
+                    className={`twisty expandable${rootOpen ? ' open' : ''}`}
+                    onClick={(e) => { e.stopPropagation(); setRootOpen((o) => !o); }}
+                  />
                   <TreeIcon name="project_kicad" />
                   <span>{displayName || projName || 'Project'}</span>
                 </div>
                 {/* project directory contents, flat and KiCad-sorted */}
-                {dirRoot?.children.map((c) => renderDir(c, 1))}
+                {rootOpen && dirRoot?.children.map((c) => renderDir(c, 1))}
               </>
             ) : (
               <>
