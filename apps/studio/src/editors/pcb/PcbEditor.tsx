@@ -386,16 +386,19 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic }: {
     return () => window.removeEventListener('keydown', onKey);
   }, [zoomToFit]);
 
+  const [viewer3dReady, setViewer3dReady] = useState(false);
   // Mount the three.js 3D viewer while the overlay is open. Lazy-imported so
   // three.js only downloads when the user actually opens the 3D view.
   useEffect(() => {
     if (!show3D || !viewer3dRef.current || !boardRef.current) return;
     let viewer: Viewer3D | null = null;
     let cancelled = false;
+    setViewer3dReady(false);
     const el = viewer3dRef.current, brd = boardRef.current;
     void import('./pcb3d.js').then(({ mount3DViewer }) => {
       if (cancelled) return;
       try { viewer = mount3DViewer(el, brd); } catch { viewer = null; }
+      setViewer3dReady(true);
     });
     return () => { cancelled = true; viewer?.dispose(); };
   }, [show3D]);
@@ -797,7 +800,14 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic }: {
             <span style={{ flex: 1 }} />
             <button onClick={() => setShow3D(false)}>Close ✕</button>
           </div>
-          <div ref={viewer3dRef} style={{ flex: 1, minHeight: 0, position: 'relative' }} />
+          <div ref={viewer3dRef} style={{ flex: 1, minHeight: 0, position: 'relative', background: 'linear-gradient(180deg, rgb(204,204,230) 0%, rgb(102,102,128) 100%)' }}>
+            {!viewer3dReady && (
+              <div className="ze-canvas-loading">
+                <span className="ze-spinner" />
+                <span>Loading 3D viewer…</span>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

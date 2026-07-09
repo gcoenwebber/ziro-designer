@@ -11,6 +11,7 @@
  */
 import * as THREE from 'three';
 import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { buildScene } from './renderBoard.js';
 import { buildBoardOutline } from './boardOutline.js';
 import { buildBoardGeom, boardHoles, type Mesh } from './boardGeom.js';
@@ -126,8 +127,15 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
   } catch { container.removeChild(canvas); return null; }
   renderer.setPixelRatio(window.devicePixelRatio || 1);
   renderer.setClearColor(0x000000, 0);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.25;
 
   const scene = new THREE.Scene();
+  // A soft indoor environment so the PBR metals (copper/gold) actually catch
+  // light instead of reflecting black — this is what made it look dark.
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environment = envTex;
 
   const disposables: { dispose(): void }[] = [];
   const toGeom = (g: Group): THREE.BufferGeometry => {
@@ -166,8 +174,8 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
 
   // Lighting: soft hemispheric ambient + a headlight that follows the camera
   // (KiCad's key light tracks the viewer), so the visible side is always lit.
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x555566, 0.75));
-  const headlight = new THREE.DirectionalLight(0xffffff, 1.1);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x556, 1.1));
+  const headlight = new THREE.DirectionalLight(0xffffff, 2.2);
   scene.add(headlight);
 
   // ---- camera + KiCad-style trackball --------------------------------------
@@ -212,6 +220,8 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
       ro.disconnect();
       controls.dispose();
       for (const d of disposables) d.dispose();
+      envTex.dispose();
+      pmrem.dispose();
       renderer.dispose();
       if (canvas.parentElement === container) container.removeChild(canvas);
     },
