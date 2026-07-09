@@ -84,30 +84,35 @@ const INTERLINE_PITCH = 1.68;
 
 export function layoutText(text: string, size: number): { strokes: Vec2[][]; width: number } {
   const gl = glyphs();
-  const out: Vec2[][] = [];
   // KiCad draws multi-line text (EDA_TEXT with embedded \n) as stacked lines
   // spaced by GetInterline(); a lone newline must not render as a glyph.
   const lines = text.split('\n');
-  let maxWidth = 0;
 
-  for (let li = 0; li < lines.length; li++) {
-    const lineY = li * INTERLINE_PITCH * size;
+  // Pass 1: lay each line out left-aligned from x=0, keep its strokes + width.
+  const laid = lines.map((line) => {
+    const strokes: Vec2[][] = [];
     let cursorX = 0;
-    for (const ch of lines[li]!) {
-      const code = ch.codePointAt(0)!;
-      if (ch === ' ') {
-        cursorX += spaceAdvance() * size;
-        continue;
-      }
-      let dd = code - 0x20;
-      if (dd < 0 || dd >= gl.length) dd = '?'.charCodeAt(0) - 0x20; // non-printable/out-of-range -> '?'
+    for (const ch of line) {
+      if (ch === ' ') { cursorX += spaceAdvance() * size; continue; }
+      let dd = ch.codePointAt(0)! - 0x20;
+      if (dd < 0 || dd >= gl.length) dd = '?'.charCodeAt(0) - 0x20; // non-printable -> '?'
       const g = gl[dd]!;
-      for (const stroke of g.strokes) {
-        out.push(stroke.map((p) => ({ x: cursorX + p.x * size, y: lineY + p.y * size })));
-      }
+      for (const stroke of g.strokes) strokes.push(stroke.map((p) => ({ x: cursorX + p.x * size, y: p.y * size })));
       cursorX += g.advance * size;
     }
-    if (cursorX > maxWidth) maxWidth = cursorX;
-  }
+    return { strokes, width: cursorX };
+  });
+
+  const maxWidth = Math.max(0, ...laid.map((l) => l.width));
+  // KiCad centres each line horizontally and centres the whole block vertically
+  // for the default (centre) justify — so a short second line sits centred under
+  // a long first line, not left-aligned.
+  const vShift = -((lines.length - 1) * INTERLINE_PITCH * size) / 2;
+  const out: Vec2[][] = [];
+  laid.forEach((ld, li) => {
+    const dx = (maxWidth - ld.width) / 2;
+    const dy = li * INTERLINE_PITCH * size + vShift;
+    for (const s of ld.strokes) out.push(s.map((p) => ({ x: p.x + dx, y: p.y + dy })));
+  });
   return { strokes: out, width: maxWidth };
 }
