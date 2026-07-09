@@ -182,18 +182,20 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
   // face — soldermask, copper (faint under the mask), exposed copper (gold), and
   // silkscreen. All triangles → stays sharp at any zoom, no baked texture.
   const hz = th / 2;
-  const outline = buildBoardOutline(board, box);
+  const holes = boardHoles(board, box);
+  const outline = buildBoardOutline(board, box, holes); // drills cut from the surface
   const geom = buildBoardGeom(board, box);
 
   // KiCad's exact 3D material colours (board_adapter.cpp defaults). The mask is
   // translucent (alpha 0.83), so the FR4 body + copper show through it — that's
   // the faintly see-through look of the board's centre.
   const C = {
-    fr4: [0.40, 0.40, 0.50] as const,     // board body (FR4)
+    fr4: [0.52, 0.42, 0.24] as const,     // FR4 substrate (brown, seen at the edge)
     copper: [0.75, 0.61, 0.23] as const,  // copper (traces, under the mask)
     mask: [0.08, 0.20, 0.14] as const,    // soldermask (translucent)
     gold: [0.85, 0.68, 0.30] as const,    // exposed copper at openings (pads)
     silk: [0.94, 0.94, 0.94] as const,    // silkscreen
+    barrel: [0.72, 0.56, 0.26] as const,  // plated hole wall (copper/gold)
   };
 
   interface Group { verts: number[]; idx: number[]; color: readonly [number, number, number]; alpha: number }
@@ -226,25 +228,19 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
   addFlat(gSilk, geom.front.silk, zS, 1);
   addFlat(gSilk, geom.back.silk, -zS, -1);
 
-  // Drilled holes (vias + through-hole pads): a dark cap on each face plus a
-  // barrel through the board, so holes read as real drills at any angle.
-  const gHole = mkGroup([0.07, 0.07, 0.08]);
-  const zH = zP + 0.006; // just above the pads
-  for (const h of boardHoles(board, box)) {
+  // Plated hole barrels (copper/gold), lining the drilled voids. The void is cut
+  // from the board/pads/mask (buildBoardOutline drills + pad holes), so you see
+  // through it — no dark cap; just the gold barrel wall, like KiCad.
+  const gHole = mkGroup(C.barrel);
+  const zBar = zS + 0.01; // span just past the top/bottom surface layers
+  for (const h of holes) {
     const n = Math.max(10, Math.min(48, Math.round(h.r * 120)));
-    for (const s of [1, -1]) {                       // dark cap on each face
-      const cz = s > 0 ? zH : -zH;
-      const c = gHole.verts.length / 6;
-      gHole.verts.push(h.x, h.y, cz, 0, 0, s);
-      for (let i = 0; i <= n; i++) { const a = (2 * Math.PI * i) / n; gHole.verts.push(h.x + h.r * Math.cos(a), h.y + h.r * Math.sin(a), cz, 0, 0, s); }
-      for (let i = 1; i <= n; i++) { if (s > 0) gHole.idx.push(c, c + i, c + i + 1); else gHole.idx.push(c, c + i + 1, c + i); }
-    }
-    for (let i = 0; i < n; i++) {                     // barrel wall (inward normals)
+    for (let i = 0; i < n; i++) {
       const a0 = (2 * Math.PI * i) / n, a1 = (2 * Math.PI * (i + 1)) / n;
       const x0 = h.x + h.r * Math.cos(a0), y0 = h.y + h.r * Math.sin(a0);
       const x1 = h.x + h.r * Math.cos(a1), y1 = h.y + h.r * Math.sin(a1);
       const b = gHole.verts.length / 6;
-      gHole.verts.push(x0, y0, zH, -Math.cos(a0), -Math.sin(a0), 0, x1, y1, zH, -Math.cos(a1), -Math.sin(a1), 0, x1, y1, -zH, -Math.cos(a1), -Math.sin(a1), 0, x0, y0, -zH, -Math.cos(a0), -Math.sin(a0), 0);
+      gHole.verts.push(x0, y0, zBar, -Math.cos(a0), -Math.sin(a0), 0, x1, y1, zBar, -Math.cos(a1), -Math.sin(a1), 0, x1, y1, -zBar, -Math.cos(a1), -Math.sin(a1), 0, x0, y0, -zBar, -Math.cos(a0), -Math.sin(a0), 0);
       gHole.idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
     }
   }

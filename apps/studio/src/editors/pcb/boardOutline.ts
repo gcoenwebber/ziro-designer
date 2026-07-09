@@ -93,8 +93,10 @@ function chainLoops(polys: Vec2[][], tol: number): Vec2[][] {
   return loops;
 }
 
-/** Build the triangulated board outline (mm, centred 3D frame). */
-export function buildBoardOutline(board: Board, box: Box): BoardOutline {
+/** Build the triangulated board outline (mm, centred 3D frame). `drills` (also
+ * centred 3D mm) are subtracted from the surface so holes are real voids — the
+ * board loops (for the walls) keep only the perimeter + Edge.Cuts cutouts. */
+export function buildBoardOutline(board: Board, box: Box, drills: { x: number; y: number; r: number }[] = []): BoardOutline {
   const cx = (box.minX + box.maxX) / 2;
   const cy = (box.minY + box.maxY) / 2;
   const to3d = (p: Vec2): Pt => ({ x: (p.x - cx) / MM, y: -(p.y - cy) / MM });
@@ -127,11 +129,19 @@ export function buildBoardOutline(board: Board, box: Box): BoardOutline {
   const outer = loops[0]!;
   const holes = loops.slice(1);
 
-  // Triangulate outer + holes (earcut's flat coords + hole start indices).
+  // Drill voids as extra hole rings (so the surface is see-through at holes).
+  const drillRings = drills.map((d) => {
+    const n = Math.max(10, Math.min(48, Math.round(d.r * 120)));
+    const ring: Pt[] = [];
+    for (let i = 0; i < n; i++) { const a = (2 * Math.PI * i) / n; ring.push({ x: d.x + d.r * Math.cos(a), y: d.y + d.r * Math.sin(a) }); }
+    return ring;
+  });
+
+  // Triangulate outer + cutouts + drill voids (earcut flat coords + hole starts).
   const flat: number[] = [];
   const holeIdx: number[] = [];
   for (const p of outer) flat.push(p.x, p.y);
-  for (const h of holes) {
+  for (const h of [...holes, ...drillRings]) {
     holeIdx.push(flat.length / 2);
     for (const p of h) flat.push(p.x, p.y);
   }

@@ -112,6 +112,20 @@ export function buildBoardGeom(board: Board, box: Box): BoardGeom {
   const cy = (box.minY + box.maxY) / 2;
   const to3d = (p: Vec2): Pt => ({ x: (p.x - cx) / MM, y: -(p.y - cy) / MM });
   const poly3d = (mesh: Mesh, loopIU: Pt[]): void => addPoly(mesh, loopIU.map(to3d));
+  // Same, but with a hole (drill) cut out of the polygon (earcut with a ring).
+  const poly3dHole = (mesh: Mesh, outerIU: Pt[], holeIU: Pt[]): void => {
+    const outer = outerIU.map(to3d), hole = holeIU.map(to3d);
+    if (outer.length < 3 || hole.length < 3) { addPoly(mesh, outer); return; }
+    const flat: number[] = [];
+    for (const p of outer) flat.push(p.x, p.y);
+    const holeStart = outer.length;
+    for (const p of hole) flat.push(p.x, p.y);
+    const t = earcut(flat, [holeStart]);
+    const base = mesh.verts.length;
+    for (const p of outer) mesh.verts.push(p);
+    for (const p of hole) mesh.verts.push(p);
+    for (const i of t) mesh.tris.push(base + i);
+  };
 
   const front: SideGeom = { copper: newMesh(), pads: newMesh(), silk: newMesh() };
   const back: SideGeom = { copper: newMesh(), pads: newMesh(), silk: newMesh() };
@@ -127,15 +141,22 @@ export function buildBoardGeom(board: Board, box: Box): BoardGeom {
   }
   // Zone fills → copper polygons.
   for (const z of board.zones) for (const f of z.fills) { const s = side(f.layer); if (s) for (const poly of f.polys) poly3d(s.copper, poly); }
-  // Vias → copper discs (through both sides).
-  for (const v of board.vias) { poly3d(front.copper, disc(v.at.x, v.at.y, v.size / 2)); poly3d(back.copper, disc(v.at.x, v.at.y, v.size / 2)); }
+  // Vias → copper annulus (drill cut out) on both sides.
+  for (const v of board.vias) {
+    const ring = disc(v.at.x, v.at.y, v.size / 2), hole = disc(v.at.x, v.at.y, v.drill / 2);
+    poly3dHole(front.copper, ring, hole);
+    poly3dHole(back.copper, ring, hole);
+  }
 
   // Pads → exposed copper (gold at mask openings), on whichever copper side(s).
   for (const fp of board.footprints) {
     for (const pad of fp.pads) {
       const loop = padPoly(pad);
-      if (pad.layers.some((l) => l === 'F.Cu' || l === '*.Cu' || l === 'F&B.Cu')) poly3d(front.pads, loop);
-      if (pad.layers.some((l) => l === 'B.Cu' || l === '*.Cu' || l === 'F&B.Cu')) poly3d(back.pads, loop);
+      // Through-hole pads: cut the drill so the pad ring is see-through.
+      const drill = pad.drill ? disc(pad.at.x, pad.at.y, Math.min(pad.drill.w, pad.drill.h) / 2) : null;
+      const add = (mesh: Mesh): void => (drill ? poly3dHole(mesh, loop, drill) : poly3d(mesh, loop));
+      if (pad.layers.some((l) => l === 'F.Cu' || l === '*.Cu' || l === 'F&B.Cu')) add(front.pads);
+      if (pad.layers.some((l) => l === 'B.Cu' || l === '*.Cu' || l === 'F&B.Cu')) add(back.pads);
     }
     // Silk graphics (lines/arcs/rects) on the footprint.
     for (const sh of fp.shapes) addSilk(sh, silkSide(sh.layer), poly3d);
@@ -160,7 +181,14 @@ function addSilkText(t: Text, s: SideGeom | null, poly3d: (mesh: Mesh, loop: Pt[
   const j = t.justify ?? [];
   const offX = j.includes('left') ? 0 : j.includes('right') ? -width : -width / 2;
   const offY = j.includes('top') ? size : j.includes('bottom') ? 0 : size / 2;
-  const rad = (-t.angle * Math.PI) / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+  // Keep footprint reference/value text upright, never upside down — KiCad's
+  // PCB_TEXT::GetDrawRotation (keep angle in ]-90..90]).
+  let ang = t.angle;
+  if (t.kind === 'reference' || t.kind === 'value') {
+    while (ang > 90) ang -= 180;
+    while (ang <= -90) ang += 180;
+  }
+  const rad = (-ang * Math.PI) / 180, cos = Math.cos(rad), sin = Math.sin(rad);
   const mir = t.mirror ? -1 : 1, tilt = t.italic ? ITALIC_TILT : 0;
   const world = (p: Vec2): Pt => {
     const gx = (p.x - p.y * tilt + offX) * mir, gy = p.y + offY;
