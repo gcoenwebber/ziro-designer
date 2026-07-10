@@ -601,12 +601,13 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, onOpenSymb
   };
 
   const proFile = useMemo(() => picked?.find((f) => /\.kicad_pro$/i.test(f.name)) ?? null, [picked]);
-  const displayName = proFile ? basename(proFile.name).replace(/\.kicad_pro$/i, '') : '';
 
   // The project name drives KiCad's root-file detection (which schematic shows,
   // and the sort weight). Falls back to the root .kicad_sch / first file.
   const projName = useMemo(() => (picked ? projectNameOf(picked) : ''), [picked]);
   const projLower = projName.toLowerCase();
+  // KiCad's tree root shows the full .kicad_pro filename (m_root = fn.GetFullName()).
+  const rootLabel = proFile ? basename(proFile.name) : projName ? `${projName}.kicad_pro` : 'Project';
 
   const launchSchematic = (startFile?: string): void => {
     if (picked && onOpenProject) onOpenProject(picked, startFile);
@@ -800,7 +801,7 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, onOpenSymb
                     onClick={(e) => { e.stopPropagation(); setRootOpen((o) => !o); }}
                   />
                   <TreeIcon name="project_kicad" />
-                  <span>{displayName || projName || 'Project'}</span>
+                  <span>{rootLabel}</span>
                 </div>
                 {/* project directory contents, flat and KiCad-sorted */}
                 {rootOpen && dirRoot?.children.map((c) => renderDir(c, 1))}
