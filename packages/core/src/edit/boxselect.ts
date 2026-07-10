@@ -121,5 +121,114 @@ export function boxSelect(
       ids.add(refId('sheet', s.uuid, i));
   });
 
+  sch.textBoxes.forEach((tb, i) => {
+    const box: BBox = {
+      minX: Math.min(tb.start.x, tb.end.x), minY: Math.min(tb.start.y, tb.end.y),
+      maxX: Math.max(tb.start.x, tb.end.x), maxY: Math.max(tb.start.y, tb.end.y),
+    };
+    if (contained ? boxContains(rect, box) : boxIntersects(rect, box))
+      ids.add(refId('textbox', tb.uuid, i));
+  });
+
+  return ids;
+}
+
+// ----- lasso (freehand polygon) selection -----------------------------------
+//
+// KiCad's SCH_SELECTION_TOOL::selectLasso: a closed polygon traced by the
+// pointer. The default mode is TOUCHING_LASSO — an item is selected if the
+// polygon contains it or its outline crosses it. (KiCad additionally flips to
+// INSIDE_LASSO when the trace winds clockwise; ZiroEDA uses touching, the more
+// forgiving and common behaviour.)
+
+/** Ray-cast point-in-polygon test (even-odd rule). */
+function pointInPoly(poly: readonly Vec2[], p: Vec2): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i]!, b = poly[j]!;
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+/** Do segments p1-p2 and p3-p4 intersect (including collinear overlap)? */
+function segsIntersect(p1: Vec2, p2: Vec2, p3: Vec2, p4: Vec2): boolean {
+  const cross = (o: Vec2, p: Vec2, q: Vec2): number => (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
+  const d1 = cross(p3, p4, p1), d2 = cross(p3, p4, p2), d3 = cross(p1, p2, p3), d4 = cross(p1, p2, p4);
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return true;
+  const onSeg = (o: Vec2, p: Vec2, q: Vec2): boolean =>
+    cross(o, p, q) === 0 && Math.min(o.x, p.x) <= q.x && q.x <= Math.max(o.x, p.x)
+    && Math.min(o.y, p.y) <= q.y && q.y <= Math.max(o.y, p.y);
+  return onSeg(p3, p4, p1) || onSeg(p3, p4, p2) || onSeg(p1, p2, p3) || onSeg(p1, p2, p4);
+}
+
+/** Does the polygon touch (contain or cross) segment a-b? */
+function polyTouchesSeg(poly: readonly Vec2[], a: Vec2, b: Vec2): boolean {
+  if (pointInPoly(poly, a) || pointInPoly(poly, b)) return true;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    if (segsIntersect(a, b, poly[j]!, poly[i]!)) return true;
+  }
+  return false;
+}
+
+/** Does the polygon touch (contain or cross) axis-aligned box `box`? */
+function polyTouchesBox(poly: readonly Vec2[], box: BBox): boolean {
+  const corners: Vec2[] = [
+    { x: box.minX, y: box.minY }, { x: box.maxX, y: box.minY },
+    { x: box.maxX, y: box.maxY }, { x: box.minX, y: box.maxY },
+  ];
+  if (corners.some((c) => pointInPoly(poly, c))) return true;
+  if (poly.some((v) => containsPt(box, v))) return true;
+  for (let e = 0; e < 4; e++) {
+    const a = corners[e]!, b = corners[(e + 1) % 4]!;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      if (segsIntersect(a, b, poly[j]!, poly[i]!)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Items the lasso `polygon` (world coordinates, auto-closed) selects, using
+ * KiCad's touching semantics: the polygon contains the item or crosses it.
+ */
+export function lassoSelect(
+  sch: Schematic,
+  libById: Map<string, LibSymbol>,
+  polygon: readonly Vec2[],
+): Set<string> {
+  const ids = new Set<string>();
+  if (polygon.length < 3) return ids;
+
+  sch.symbols.forEach((s, i) => {
+    if (polyTouchesBox(polygon, symbolBodyBBox(s, libById.get(s.libId)))) ids.add(refId('symbol', s.uuid, i));
+  });
+  sch.lines.forEach((l, i) => {
+    if (polyTouchesSeg(polygon, l.start, l.end)) ids.add(refId('line', l.uuid, i));
+  });
+  sch.junctions.forEach((j, i) => {
+    if (pointInPoly(polygon, j.at)) ids.add(refId('junction', j.uuid, i));
+  });
+  sch.noConnects.forEach((nc, i) => {
+    if (pointInPoly(polygon, nc.at)) ids.add(refId('noconnect', nc.uuid, i));
+  });
+  sch.labels.forEach((l, i) => {
+    if (polyTouchesBox(polygon, labelBox(l))) ids.add(refId('label', l.uuid, i));
+  });
+  sch.busEntries.forEach((be, i) => {
+    if (polyTouchesSeg(polygon, be.at, { x: be.at.x + be.size.x, y: be.at.y + be.size.y })) ids.add(refId('busentry', be.uuid, i));
+  });
+  sch.sheets.forEach((s, i) => {
+    const box: BBox = { minX: s.at.x, minY: s.at.y, maxX: s.at.x + s.size.w, maxY: s.at.y + s.size.h };
+    if (polyTouchesBox(polygon, box)) ids.add(refId('sheet', s.uuid, i));
+  });
+  sch.textBoxes.forEach((tb, i) => {
+    const box: BBox = {
+      minX: Math.min(tb.start.x, tb.end.x), minY: Math.min(tb.start.y, tb.end.y),
+      maxX: Math.max(tb.start.x, tb.end.x), maxY: Math.max(tb.start.y, tb.end.y),
+    };
+    if (polyTouchesBox(polygon, box)) ids.add(refId('textbox', tb.uuid, i));
+  });
+
   return ids;
 }

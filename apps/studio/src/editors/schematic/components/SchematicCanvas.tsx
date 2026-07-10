@@ -3,7 +3,7 @@ import {
   hitTest, planMove, moveWithConnections, orthoMove, addItems, deleteByIds, placeSymbol,
   makeWire, makeBus, makeJunction, makeNoConnect, makeLabel, needsJunction, rotateOrientation, mirrorOrientation, transformItems,
   makeRectangle, makeCircle, makeArc, makePolyline, makeBusEntry, makeImage, DEFAULT_ENTRY_SIZE,
-  collectAnchors, selectionAnchors, nearestAnchor, danglingPinPositions, boxSelect, pasteItems, translatePayload,
+  collectAnchors, selectionAnchors, nearestAnchor, danglingPinPositions, boxSelect, lassoSelect, pasteItems, translatePayload,
   type MoveSpec, type EditCommand, type Schematic, type LibSymbol, type LibGraphic, type Vec2, type Orientation, type TransformOp, type LabelKind, type LabelShape,
   type PastePayload, type ErcViolation,
 } from '@ziroeda/core';
@@ -223,7 +223,7 @@ interface Props {
   onImagePlaced?: (at: Vec2) => void;
 }
 
-type Mode = 'idle' | 'pan' | 'dragzoom' | 'move' | 'box';
+type Mode = 'idle' | 'pan' | 'dragzoom' | 'move' | 'box' | 'lasso';
 
 // KiCad's selection-rectangle colours for a bright background
 // (common/preview_items/selection_area.cpp, selectionColorScheme[1]).
@@ -272,6 +272,8 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
   const boxOriginRef = useRef<Vec2 | null>(null);
   const boxEndRef = useRef<Vec2 | null>(null);
   const boxModifiersRef = useRef({ additive: false, subtractive: false });
+  // Lasso-selection trace (KiCad selectLasso): the freehand polygon in world coords.
+  const lassoPointsRef = useRef<Vec2[]>([]);
 
   // Wire-drawing state.
   const wireAnchorRef = useRef<Vec2 | null>(null);
@@ -383,6 +385,21 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       const w = Math.abs(be.x - bo.x), h = Math.abs(be.y - bo.y);
       ctx.fillRect(x, y, w, h);
       ctx.strokeRect(x, y, w, h);
+    }
+
+    // Lasso freehand polygon (KiCad selectLasso): closed, in the box colours.
+    const lasso = lassoPointsRef.current;
+    if (modeRef.current === 'lasso' && lasso.length >= 2) {
+      const { additive, subtractive } = boxModifiersRef.current;
+      ctx.setTransform(vp.scale, 0, 0, vp.scale, vp.offsetX, vp.offsetY);
+      ctx.fillStyle = subtractive ? BOX_FILL_SUBTRACT : additive ? BOX_FILL_ADDITIVE : BOX_FILL_NORMAL;
+      ctx.strokeStyle = BOX_OUTLINE_R2L; // lasso: greedy/touching, blue
+      ctx.lineWidth = 1 / vp.scale;
+      ctx.beginPath();
+      lasso.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
     }
 
     // Wire / bus preview segment.
@@ -741,6 +758,21 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       return;
     }
 
+    // Lasso selection tool (KiCad selectLasso): a left-press starts a freehand
+    // polygon trace; a plain click (no drag) selects the pressed item or clears.
+    if (activeTool === 'selectLasso') {
+      (e.target as Element).setPointerCapture(e.pointerId);
+      const hit = hitTest(schematic, libById, world, (6 * dpr()) / vp.scale);
+      modeRef.current = 'lasso';
+      boxHitRef.current = hit ? hit.id : null;
+      lassoPointsRef.current = [world];
+      boxModifiersRef.current = {
+        additive: (e.ctrlKey || e.shiftKey) && !e.altKey,
+        subtractive: e.ctrlKey && e.shiftKey && !e.altKey,
+      };
+      return;
+    }
+
     if (activeTool !== 'select') return; // other tools not yet implemented
 
     // Auto-start a wire when clicking a dangling pin (KiCad's autostartEvent),
@@ -819,6 +851,16 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       return;
     }
 
+    if (modeRef.current === 'lasso') {
+      // Append a point once the pointer has travelled a few screen pixels, so the
+      // trace stays a manageable polygon rather than one vertex per mouse event.
+      const pts = lassoPointsRef.current;
+      const last = pts[pts.length - 1];
+      if (!last || Math.hypot(world.x - last.x, world.y - last.y) * vp.scale > 4) pts.push(world);
+      draw();
+      return;
+    }
+
     if (activeTool === 'drawWire' || activeTool === 'drawBus') {
       if (wireAnchorRef.current) draw();
       return;
@@ -873,9 +915,28 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       panLastRef.current = null;
       return;
     }
-    if (activeTool !== 'select') return;
+    if (activeTool !== 'select' && activeTool !== 'selectLasso') return;
     (e.target as Element).releasePointerCapture(e.pointerId);
     let committedMove = false;
+    if (modeRef.current === 'lasso') {
+      const pts = lassoPointsRef.current;
+      const vp = viewportRef.current;
+      // A trace with real extent is a lasso; a near-stationary press is a click.
+      let span = 0;
+      for (const p of pts) span = Math.max(span, Math.hypot(p.x - pts[0]!.x, p.y - pts[0]!.y));
+      const movedPx = vp ? span * vp.scale : 0;
+      if (pts.length >= 3 && movedPx > 4) {
+        const { additive, subtractive } = boxModifiersRef.current;
+        onSelectBox?.(lassoSelect(schematic, libById, pts), additive, subtractive);
+      } else {
+        onSelect(boxHitRef.current, e.shiftKey);
+      }
+      boxHitRef.current = null;
+      lassoPointsRef.current = [];
+      modeRef.current = 'idle';
+      draw();
+      return;
+    }
     if (modeRef.current === 'move') {
       const d = moveDeltaRef.current;
       const spec = moveSpecRef.current;

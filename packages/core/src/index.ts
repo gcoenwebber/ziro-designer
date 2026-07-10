@@ -107,6 +107,7 @@ export {
   type SymbolEdit,
   type EditedField,
   boxSelect,
+  lassoSelect,
   copySelectionText,
   parsePastedText,
   translatePayload,

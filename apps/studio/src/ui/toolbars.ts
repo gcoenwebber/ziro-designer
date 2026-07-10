@@ -99,7 +99,8 @@ export const LEFT_TOOLBAR: ToolEntry[] = [
 
 /** Right vertical toolbar (drawing / placement tools — radio selection). */
 export const RIGHT_TOOLBAR: ToolEntry[] = [
-  { id: 'select', icon: 'selectRect', title: 'Select' },
+  { id: 'select', icon: 'selectRect', title: 'Select items using a rectangle' },
+  { id: 'selectLasso', icon: 'selectLasso', title: 'Select items using a lasso' },
   { id: 'highlightNet', icon: 'highlightNet', title: 'Highlight net' },
   sep,
   { id: 'placeSymbol', icon: 'symbol', title: 'Place symbol' },
