@@ -5,8 +5,9 @@ import { serializeFootprint } from '../src/pcb/write-footprint.js';
 import {
   fpItemId, hitTestFootprint, footprintBBox, moveFootprintItems,
   rotateFootprintItems, mirrorFootprintItems, deleteFootprintItems, itemsInBox,
-  setFootprintReference, setFootprintValue, setFootprintDescription, footprintStringChild,
+  setFootprintReference, setFootprintValue, setFootprintDescription, footprintStringChild, addPad,
 } from '../src/pcb/edit-footprint.js';
+import type { PcbPad } from '../src/pcb/types.js';
 import { mmToIU, iuToMM } from '../src/units.js';
 
 // A two-pad footprint with a silk line and a reference, in local coords.
@@ -92,6 +93,29 @@ describe('footprint editing', () => {
     expect(footprintStringChild(reread, 'descr')).toBe('A 10k resistor');
     // Untouched geometry + unmodelled pad fields survive.
     expect(reread.pads).toHaveLength(2);
+    expect(serializeFootprint(fp)).toContain('(pinfunction "A")');
+  });
+
+  it('adds a new through-hole pad that serializes canonically', () => {
+    const pad: PcbPad = {
+      number: '3', type: 'thru_hole', shape: 'circle',
+      at: { x: mmToIU(2), y: 0 }, angle: 0,
+      size: { x: mmToIU(1.524), y: mmToIU(1.524) },
+      drill: { oblong: false, w: mmToIU(0.762), h: mmToIU(0.762) },
+      layers: ['*.Cu', '*.Mask'],
+      source: { kind: 'list', items: [] },
+    };
+    const fp = addPad(read(), pad);
+    const reread = readFootprintFile(parse(serializeFootprint(fp)))!;
+    expect(reread.pads).toHaveLength(3);
+    const p = reread.pads[2]!;
+    expect(p.number).toBe('3');
+    expect(p.type).toBe('thru_hole');
+    expect(p.shape).toBe('circle');
+    expect(iuToMM(p.size.x)).toBeCloseTo(1.524, 4);
+    expect(iuToMM(p.drill!.w)).toBeCloseTo(0.762, 4);
+    expect(p.layers).toEqual(['*.Cu', '*.Mask']);
+    // The earlier pads (with pinfunction) are untouched.
     expect(serializeFootprint(fp)).toContain('(pinfunction "A")');
   });
 

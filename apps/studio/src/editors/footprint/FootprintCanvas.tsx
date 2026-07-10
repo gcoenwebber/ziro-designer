@@ -40,6 +40,10 @@ export interface FootprintCanvasProps {
   onSelectBox?: (ids: string[], additive: boolean) => void;
   /** A committed drag-move of the current selection (world-unit delta). */
   onMoveItems?: (delta: Vec2) => void;
+  /** A click while a placement tool is active (e.g. Add Pad), in world units. */
+  onPlace?: (pos: Vec2) => void;
+  /** Double-click an item (open its properties). */
+  onEditItem?: (id: string) => void;
 }
 
 const EMPTY_SEL: ReadonlySet<string> = new Set();
@@ -47,7 +51,7 @@ const EMPTY_SEL: ReadonlySet<string> = new Set();
 export const FootprintCanvas = forwardRef<FootprintCanvasController, FootprintCanvasProps>(
   function FootprintCanvas({
     footprint, visible, drawOpts = DEFAULT_DRAW_OPTIONS, selection = EMPTY_SEL, activeTool = 'select',
-    onCursorMove, onScaleChange, onSelect, onSelectBox, onMoveItems,
+    onCursorMove, onScaleChange, onSelect, onSelectBox, onMoveItems, onPlace, onEditItem,
   }, ref) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const wrapRef = useRef<HTMLDivElement>(null);
@@ -301,17 +305,23 @@ export const FootprintCanvas = forwardRef<FootprintCanvasController, FootprintCa
       | { mode: 'pan'; last: { x: number; y: number } }
       | { mode: 'box'; start: Vec2; additive: boolean }
       | { mode: 'move'; start: Vec2; moved: boolean }
+      | { mode: 'place'; start: { x: number; y: number }; moved: boolean }
       | null
     >(null);
 
     const onPointerDown = (e: React.PointerEvent): void => {
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
       // Middle button always pans (right button reserved for context menu later).
-      if (e.button === 1 || (e.button === 0 && activeTool !== 'select')) {
+      if (e.button === 1) {
         gestureRef.current = { mode: 'pan', last: { x: e.clientX, y: e.clientY } };
         return;
       }
       if (e.button !== 0) return;
+      // A placement tool is active: a click drops the item (drag is ignored).
+      if (activeTool !== 'select') {
+        gestureRef.current = { mode: 'place', start: { x: e.clientX, y: e.clientY }, moved: false };
+        return;
+      }
       const world = worldAt(e.clientX, e.clientY);
       const fp = fpForDrawRef.current;
       const tol = (6 * dpr) / viewRef.current.scale;
@@ -340,6 +350,8 @@ export const FootprintCanvas = forwardRef<FootprintCanvasController, FootprintCa
       } else if (g.mode === 'box') {
         boxRef.current = { a: g.start, b: worldAt(e.clientX, e.clientY) };
         requestDraw();
+      } else if (g.mode === 'place') {
+        if (Math.hypot(e.clientX - g.start.x, e.clientY - g.start.y) > 3) g.moved = true;
       } else {
         const w = worldAt(e.clientX, e.clientY);
         moveDeltaRef.current = { x: w.x - g.start.x, y: w.y - g.start.y };
@@ -352,6 +364,10 @@ export const FootprintCanvas = forwardRef<FootprintCanvasController, FootprintCa
       const g = gestureRef.current;
       gestureRef.current = null;
       if (!g) return;
+      if (g.mode === 'place') {
+        if (!g.moved) onPlace?.(worldAt(e.clientX, e.clientY));
+        return;
+      }
       if (g.mode === 'box') {
         const b = boxRef.current;
         boxRef.current = null;
@@ -385,6 +401,13 @@ export const FootprintCanvas = forwardRef<FootprintCanvasController, FootprintCa
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
+          onDoubleClick={(e) => {
+            const fp = fpForDrawRef.current;
+            if (!fp || !onEditItem) return;
+            const w = worldAt(e.clientX, e.clientY);
+            const hit = hitTestFootprint(fp, w, (6 * dpr) / viewRef.current.scale);
+            if (hit) onEditItem(hit);
+          }}
           onPointerLeave={() => onCursorMove?.(null)}
         />
       </div>

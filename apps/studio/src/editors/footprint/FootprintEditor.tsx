@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import {
   EMPTY_SOURCE, iuToMM, parse, readFootprintFile, mmToIU,
-  moveFootprintItems, rotateFootprintItems, mirrorFootprintItems, deleteFootprintItems, fpItemBBox,
+  moveFootprintItems, rotateFootprintItems, mirrorFootprintItems, deleteFootprintItems, fpItemBBox, addPad,
   setFootprintReference, setFootprintValue, setFootprintDescription, setFootprintKeywords,
-  type PcbFootprint, type PcbTextItem, type Vec2,
+  type PcbFootprint, type PcbPad, type PcbTextItem, type Vec2,
 } from '@ziroeda/core';
 import { FootprintPropertiesDialog } from './dialogs.js';
 import { MenuBar, type Menu } from '../../ui/MenuBar.js';
@@ -256,6 +256,33 @@ export function FootprintEditor({ onExitToHome, initialProject }: {
     next = setFootprintKeywords(next, r.keywords);
     commit(next, 'Edit Footprint Properties');
   }, [workFp, commit]);
+
+  // The next pad number: one past the highest numeric pad (KiCad's PAD_TOOL).
+  const nextPadNumber = (fp: PcbFootprint): string => {
+    let max = 0;
+    for (const p of fp.pads) { const n = parseInt(p.number, 10); if (Number.isFinite(n) && n > max) max = n; }
+    return String(max + 1);
+  };
+
+  // Place a pad at the click (Add Pad tool). Defaults mirror KiCad's pad master:
+  // a through-hole round pad, 1.524 mm / 0.762 mm drill, on all copper + mask.
+  const placePadAt = useCallback((pos: Vec2) => {
+    if (!workFp || !curLib || !curName) return;
+    const pad: PcbPad = {
+      number: nextPadNumber(workFp), type: 'thru_hole', shape: 'circle',
+      at: { x: Math.round(pos.x), y: Math.round(pos.y) }, angle: 0,
+      size: { x: mmToIU(1.524), y: mmToIU(1.524) },
+      drill: { oblong: false, w: mmToIU(0.762), h: mmToIU(0.762) },
+      layers: ['*.Cu', '*.Mask'],
+      source: EMPTY_SOURCE,
+    };
+    commit(addPad(workFp, pad), 'Add Pad');
+  }, [workFp, curLib, curName, commit]);
+
+  const onPlace = useCallback((pos: Vec2) => {
+    if (activeTool === 'placePad') placePadAt(pos);
+    // Other placement tools (graphics/text) are staged.
+  }, [activeTool, placePadAt]);
 
   // Click / box selection from the canvas (PCB_SELECTION_TOOL semantics).
   const onSelect = useCallback((id: string | null, additive: boolean) => {
@@ -522,7 +549,7 @@ export function FootprintEditor({ onExitToHome, initialProject }: {
     {
       label: 'Place',
       items: [
-        { label: 'Pad', icon: 'placePad', disabled: true },
+        { label: 'Pad', icon: 'placePad', action: () => setActiveTool('placePad'), disabled: !workFp },
         { label: 'Line', icon: 'drawLine', disabled: true },
         { label: 'Arc', icon: 'drawArc', disabled: true },
         { label: 'Rectangle', icon: 'drawRectangle', disabled: true },
@@ -678,6 +705,7 @@ export function FootprintEditor({ onExitToHome, initialProject }: {
             onSelect={onSelect}
             onSelectBox={onSelectBox}
             onMoveItems={moveSel}
+            onPlace={onPlace}
           />
           {!workFp && (
             <div style={{
