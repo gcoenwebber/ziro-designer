@@ -40,6 +40,9 @@ html, body { background: var(--chrome-bg2); }
   cursor: default;
 }
 .ze-menubar .ze-menu:hover { background: var(--chrome-hover); }
+/* KiCad window-title info in the menu bar: "<project> — <Editor>". */
+.ze-menubar-title { margin-left: auto; padding: 0 12px; display: flex; align-items: center; gap: 6px; color: #c9cbce; font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ze-menubar-title b { color: #fff; font-weight: 600; }
 
 /* Toolbars */
 .ze-toolbar {

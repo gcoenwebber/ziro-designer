@@ -53,7 +53,7 @@ export interface PickedFile { name: string; text: string }
 
 const DEFAULT_FILE = 'untitled.kicad_sch';
 
-export function SchematicEditor({ onExitToHome, onShowPcb, onShowSymbolEditor, initialProject, initialFile, placeRequest, onProjectChange }: {
+export function SchematicEditor({ onExitToHome, onShowPcb, onShowSymbolEditor, initialProject, initialFile, placeRequest, onProjectChange, projectName }: {
   onExitToHome: () => void;
   onShowPcb?: () => void;
   /** Open the Symbol Editor (the top toolbar's `symbolEditor` button). */
@@ -64,6 +64,8 @@ export function SchematicEditor({ onExitToHome, onShowPcb, onShowSymbolEditor, i
   placeRequest?: { lib: LibSymbol; nonce: number } | null;
   /** Autosave hook: called (debounced) with the serialized sheets after edits. */
   onProjectChange?: (files: PickedFile[]) => void;
+  /** Project name shown as "<project> — Schematic Editor" in the menu bar. */
+  projectName?: string;
 }): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const initial = useMemo<Schematic | null>(() => {
@@ -675,6 +677,7 @@ export function SchematicEditor({ onExitToHome, onShowPcb, onShowSymbolEditor, i
       <MenuBar
         menus={menus}
         leftSlot={<div className="ze-home-link" onClick={onExitToHome} title="Back to project manager">⌂ ZiroEDA</div>}
+        title={<><b>{projectName || 'No project'}</b>&nbsp;—&nbsp;Schematic Editor</>}
       />
 
       <Toolbar entries={TOP_TOOLBAR} orientation="horizontal" onActivate={onTopAction} />

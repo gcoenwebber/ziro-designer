@@ -22,10 +22,13 @@ export function MenuBar({
   menus,
   leftSlot,
   rightSlot,
+  title,
 }: {
   menus: Menu[];
   leftSlot?: ReactNode;
   rightSlot?: ReactNode;
+  /** KiCad-style "<project> — <Editor>" shown in the bar (window-title info). */
+  title?: ReactNode;
 }): JSX.Element {
   const [open, setOpen] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -75,6 +78,7 @@ export function MenuBar({
           )}
         </div>
       ))}
+      {title && <div className="ze-menubar-title">{title}</div>}
       {rightSlot}
     </div>
   );

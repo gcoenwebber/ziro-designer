@@ -88,11 +88,13 @@ const PRESETS: { name: string; layers: (all: string[], copper: string[]) => stri
   { name: 'Back Assembly View', layers: () => ['B.SilkS', 'B.Mask', 'B.Fab', 'B.CrtYd', 'Edge.Cuts'] },
 ];
 
-export function PcbEditor({ fileName, text, onExit, onShowSchematic }: {
+export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName }: {
   fileName: string;
   text: string;
   onExit: () => void;
   onShowSchematic?: () => void;
+  /** Project name shown as "<project> — PCB Editor" in the menu bar. */
+  projectName?: string;
 }): JSX.Element {
   const [board, setBoard] = useState<Board | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -594,6 +596,7 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic }: {
       <MenuBar
         menus={menus}
         leftSlot={<div className="ze-home-link" onClick={onExit} title="Back to project manager">⌂ ZiroEDA</div>}
+        title={<><b>{projectName || fileName.replace(/\.kicad_pcb$/i, '') || 'No project'}</b>&nbsp;—&nbsp;PCB Editor</>}
       />
       <Toolbar entries={PCB_TOP_TOOLBAR} orientation="horizontal" onActivate={onTopAction} />
 

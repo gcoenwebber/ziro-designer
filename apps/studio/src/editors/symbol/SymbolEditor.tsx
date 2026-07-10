@@ -88,11 +88,13 @@ function flattenAgainst(sym: LibSymbol, lib: ManagedLibrary, depth = 0): LibSymb
   };
 }
 
-export function SymbolEditor({ onExitToHome, initialProject, onAddSymbolToSchematic }: {
+export function SymbolEditor({ onExitToHome, initialProject, onAddSymbolToSchematic, projectName }: {
   onExitToHome: () => void;
   initialProject?: SymbolEditorFile[] | null;
   /** eeschema wiring for "Add symbol to schematic" (SCH_ACTIONS::addSymbolToSchematic). */
   onAddSymbolToSchematic?: (sym: LibSymbol) => void;
+  /** Project name shown as "<project> — Symbol Editor" in the menu bar. */
+  projectName?: string;
 }): JSX.Element {
   const manager = useRef(new SymbolLibraryManager());
   const theme = useSchematicTheme();
@@ -996,6 +998,7 @@ export function SymbolEditor({ onExitToHome, initialProject, onAddSymbolToSchema
       <MenuBar
         menus={menus}
         leftSlot={<div className="ze-home-link" onClick={onExitToHome} title="Back to project manager">⌂ ZiroEDA</div>}
+        title={<><b>{projectName || 'No project'}</b>&nbsp;—&nbsp;Symbol Editor</>}
       />
 
       {/* Top toolbar with the unit-selector combo (ID_LIBEDIT_SELECT_UNIT_NUMBER). */}

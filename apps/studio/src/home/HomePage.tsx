@@ -747,6 +747,7 @@ export function HomePage({ onOpenSchematic, onOpenProject, onOpenPcb, onOpenSymb
 
       <MenuBar
         menus={menus}
+        title={<><b>{picked ? rootLabel : 'No project'}</b>&nbsp;—&nbsp;Project Manager</>}
         rightSlot={
           session ? (
             <div className="ze-account">

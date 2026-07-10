@@ -106,6 +106,12 @@ export function App(): JSX.Element {
     () => !!projectFiles?.some((f) => /\.kicad_sch$/i.test(f.name)),
     [projectFiles],
   );
+  // KiCad shows "<project> — <Editor>" in the window title; we put it in the menu bar.
+  const projectName = useMemo(
+    () => projectFiles ? projectNameOf(projectFiles)
+      : standalonePcb ? pcbBasename(standalonePcb.name).replace(/\.kicad_pcb$/i, '') : '',
+    [projectFiles, standalonePcb],
+  );
 
   const goHome = useCallback(() => setView('home'), []);
   const showPcb = useCallback(() => { setPcbMounted(true); setView('pcb'); }, []);
@@ -167,6 +173,7 @@ export function App(): JSX.Element {
             initialFile={startFile}
             placeRequest={placeRequest}
             onProjectChange={onProjectChange}
+            projectName={projectName}
           />
         </div>
       )}
@@ -177,6 +184,7 @@ export function App(): JSX.Element {
             text={pcbFile.text}
             onExit={goHome}
             onShowSchematic={hasSchematic ? showSchematic : undefined}
+            projectName={projectName}
           />
         </div>
       )}
@@ -186,6 +194,7 @@ export function App(): JSX.Element {
             onExitToHome={goHome}
             initialProject={projectFiles}
             onAddSymbolToSchematic={addSymbolToSchematic}
+            projectName={projectName}
           />
         </div>
       )}
