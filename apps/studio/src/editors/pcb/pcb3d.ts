@@ -19,6 +19,10 @@ import { mountComponents } from './component3d.js';
 import type { Board } from '@ziroeda/core';
 
 const MM = 10000;
+// Where the 3D model library is hosted. Defaults to the bundled demo set;
+// point VITE_MODELS3D_URL at the hosted library (Cloudflare R2 / jsDelivr) to
+// cover all boards. See the ziro-3d-components-plan memory.
+const MODELS3D_BASE = (import.meta.env.VITE_MODELS3D_URL as string | undefined) || '/models3d';
 
 interface BBox { minX: number; minY: number; maxX: number; maxY: number }
 
@@ -182,7 +186,7 @@ export function mount3DViewer(container: HTMLElement, board: Board): Viewer3D | 
   scene.add(headlight);
 
   // Footprint 3D models (loaded async from the bundled/hosted library).
-  const disposeComponents = mountComponents(scene, board, box, hz, '/models3d');
+  const disposeComponents = mountComponents(scene, board, box, hz, MODELS3D_BASE);
 
   // ---- camera + KiCad-style trackball --------------------------------------
   const camera = new THREE.PerspectiveCamera(45, 1, Math.max(0.05, half * 0.02), half * 200);
