@@ -8,7 +8,7 @@
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import type { PcbFootprint, Vec2 } from '@ziroeda/core';
+import { hitTestFootprint, itemsInBox, fpItemBBox, type PcbFootprint, type Vec2 } from '@ziroeda/core';
 import {
   buildScene, buildDrawSteps, DEFAULT_DRAW_OPTIONS, type BoardScene, type PcbDrawOptions,
 } from '../pcb/renderBoard.js';
@@ -29,12 +29,26 @@ export interface FootprintCanvasProps {
   /** Visible board layers (Appearance panel). */
   visible: ReadonlySet<string>;
   drawOpts?: PcbDrawOptions;
+  /** Currently selected item ids (PCB_SELECTION_TOOL). */
+  selection?: ReadonlySet<string>;
+  /** Active right-toolbar tool ('select' enables picking/box/move). */
+  activeTool?: string;
   onCursorMove?: (p: Vec2 | null) => void;
   onScaleChange?: (scale: number) => void;
+  /** Click/box selection results (additive when Shift is held). */
+  onSelect?: (id: string | null, additive: boolean) => void;
+  onSelectBox?: (ids: string[], additive: boolean) => void;
+  /** A committed drag-move of the current selection (world-unit delta). */
+  onMoveItems?: (delta: Vec2) => void;
 }
 
+const EMPTY_SEL: ReadonlySet<string> = new Set();
+
 export const FootprintCanvas = forwardRef<FootprintCanvasController, FootprintCanvasProps>(
-  function FootprintCanvas({ footprint, visible, drawOpts = DEFAULT_DRAW_OPTIONS, onCursorMove, onScaleChange }, ref) {
+  function FootprintCanvas({
+    footprint, visible, drawOpts = DEFAULT_DRAW_OPTIONS, selection = EMPTY_SEL, activeTool = 'select',
+    onCursorMove, onScaleChange, onSelect, onSelectBox, onMoveItems,
+  }, ref) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const wrapRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef({ scale: 0.005, tx: 0, ty: 0 });
@@ -42,6 +56,14 @@ export const FootprintCanvas = forwardRef<FootprintCanvasController, FootprintCa
     const rafRef = useRef(0);
     const [, setScale] = useState(0);
     const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+
+    // Live-gesture state (mutable, read by draw()'s overlay pass; no re-render).
+    const moveDeltaRef = useRef<Vec2 | null>(null);
+    const boxRef = useRef<{ a: Vec2; b: Vec2 } | null>(null);
+    const fpForDrawRef = useRef<PcbFootprint | null>(footprint);
+    fpForDrawRef.current = footprint;
+    const selForDrawRef = useRef<ReadonlySet<string>>(selection);
+    selForDrawRef.current = selection;
 
     // Compile the footprint (wrapped as a board) into retained per-layer paths.
     const scene = useMemo(() => buildScene(footprintToBoard(footprint)), [footprint]);
@@ -115,9 +137,45 @@ export const FootprintCanvas = forwardRef<FootprintCanvasController, FootprintCa
         ctx.imageSmoothingEnabled = true;
         ctx.setTransform(1, 0, 0, 1, 0, 0);
       }
+
+      // ----- selection + gesture overlay (device-pixel space) -----------------
+      const fp = fpForDrawRef.current;
+      const sel = selForDrawRef.current;
+      const md = moveDeltaRef.current;
+      const toPx = (p: Vec2): Vec2 => ({ x: p.x * v.scale + v.tx, y: p.y * v.scale + v.ty });
+      if (fp && sel.size > 0) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.lineWidth = Math.max(1, dpr);
+        ctx.setLineDash([4 * dpr, 3 * dpr]);
+        const ox = md ? md.x : 0, oy = md ? md.y : 0;
+        for (const id of sel) {
+          const b = fpItemBBox(fp, id);
+          if (!b) continue;
+          const p0 = toPx({ x: b.minX + ox, y: b.minY + oy });
+          const p1 = toPx({ x: b.maxX + ox, y: b.maxY + oy });
+          const pad = 2 * dpr;
+          ctx.strokeRect(Math.min(p0.x, p1.x) - pad, Math.min(p0.y, p1.y) - pad,
+            Math.abs(p1.x - p0.x) + 2 * pad, Math.abs(p1.y - p0.y) + 2 * pad);
+        }
+        ctx.setLineDash([]);
+      }
+      const box = boxRef.current;
+      if (box) {
+        const p0 = toPx(box.a), p1 = toPx(box.b);
+        // KiCad tints the marquee blue (l→r) or green (r→l window select).
+        const rightward = box.b.x >= box.a.x;
+        ctx.strokeStyle = rightward ? 'rgba(120,170,255,0.9)' : 'rgba(120,255,150,0.9)';
+        ctx.fillStyle = rightward ? 'rgba(120,170,255,0.12)' : 'rgba(120,255,150,0.12)';
+        ctx.lineWidth = dpr;
+        const x = Math.min(p0.x, p1.x), y = Math.min(p0.y, p1.y);
+        const w = Math.abs(p1.x - p0.x), h = Math.abs(p1.y - p0.y);
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeRect(x, y, w, h);
+      }
+
       setScale(v.scale);
       onScaleChange?.(v.scale);
-    }, [startCrispRender, viewMatchesCache, onScaleChange]);
+    }, [startCrispRender, viewMatchesCache, onScaleChange, dpr]);
 
     const requestDraw = useCallback(() => {
       cancelAnimationFrame(rafRef.current);
@@ -129,6 +187,9 @@ export const FootprintCanvas = forwardRef<FootprintCanvasController, FootprintCa
       cacheRef.current = null;
       requestDraw();
     }, [scene, visible, drawOpts, requestDraw]);
+
+    // The selection only affects the overlay, not the raster — just repaint.
+    useEffect(() => { requestDraw(); }, [selection, requestDraw]);
 
     const zoomToFit = useCallback(() => {
       const canvas = canvasRef.current;
@@ -226,38 +287,101 @@ export const FootprintCanvas = forwardRef<FootprintCanvasController, FootprintCa
       return () => canvas.removeEventListener('wheel', onWheel);
     }, [dpr, requestDraw]);
 
-    // Drag to pan (left or middle button); report cursor in world (IU) coords.
-    const dragRef = useRef<{ x: number; y: number } | null>(null);
+    // Pointer world position (IU) from a client event.
+    const worldAt = (clientX: number, clientY: number): Vec2 => {
+      const canvas = canvasRef.current!;
+      const rect = canvas.getBoundingClientRect();
+      const v = viewRef.current;
+      return { x: ((clientX - rect.left) * dpr - v.tx) / v.scale, y: ((clientY - rect.top) * dpr - v.ty) / v.scale };
+    };
+
+    // A gesture in flight: pan (middle button), or — with the select tool —
+    // click-select + box-select on empty space, and drag-move over a selection.
+    const gestureRef = useRef<
+      | { mode: 'pan'; last: { x: number; y: number } }
+      | { mode: 'box'; start: Vec2; additive: boolean }
+      | { mode: 'move'; start: Vec2; moved: boolean }
+      | null
+    >(null);
+
     const onPointerDown = (e: React.PointerEvent): void => {
-      if (e.button === 0 || e.button === 1) {
-        dragRef.current = { x: e.clientX, y: e.clientY };
-        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      // Middle button always pans (right button reserved for context menu later).
+      if (e.button === 1 || (e.button === 0 && activeTool !== 'select')) {
+        gestureRef.current = { mode: 'pan', last: { x: e.clientX, y: e.clientY } };
+        return;
+      }
+      if (e.button !== 0) return;
+      const world = worldAt(e.clientX, e.clientY);
+      const fp = fpForDrawRef.current;
+      const tol = (6 * dpr) / viewRef.current.scale;
+      const hit = fp ? hitTestFootprint(fp, world, tol) : null;
+      const additive = e.shiftKey;
+      if (hit) {
+        // Select the hit item (unless already selected) then start a move drag.
+        if (!selForDrawRef.current.has(hit)) onSelect?.(hit, additive);
+        gestureRef.current = { mode: 'move', start: world, moved: false };
+      } else {
+        if (!additive) onSelect?.(null, false);
+        gestureRef.current = { mode: 'box', start: world, additive };
       }
     };
+
     const onPointerMove = (e: React.PointerEvent): void => {
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const rect = canvas.getBoundingClientRect();
+      if (canvasRef.current) onCursorMove?.(worldAt(e.clientX, e.clientY));
+      const g = gestureRef.current;
+      if (!g) return;
+      if (g.mode === 'pan') {
         const v = viewRef.current;
-        const wx = ((e.clientX - rect.left) * dpr - v.tx) / v.scale;
-        const wy = ((e.clientY - rect.top) * dpr - v.ty) / v.scale;
-        onCursorMove?.({ x: wx, y: wy });
-      }
-      if (dragRef.current) {
-        const v = viewRef.current;
-        v.tx += (e.clientX - dragRef.current.x) * dpr;
-        v.ty += (e.clientY - dragRef.current.y) * dpr;
-        dragRef.current = { x: e.clientX, y: e.clientY };
+        v.tx += (e.clientX - g.last.x) * dpr;
+        v.ty += (e.clientY - g.last.y) * dpr;
+        g.last = { x: e.clientX, y: e.clientY };
+        requestDraw();
+      } else if (g.mode === 'box') {
+        boxRef.current = { a: g.start, b: worldAt(e.clientX, e.clientY) };
+        requestDraw();
+      } else {
+        const w = worldAt(e.clientX, e.clientY);
+        moveDeltaRef.current = { x: w.x - g.start.x, y: w.y - g.start.y };
+        g.moved = true;
         requestDraw();
       }
     };
-    const onPointerUp = (): void => { dragRef.current = null; };
+
+    const onPointerUp = (e: React.PointerEvent): void => {
+      const g = gestureRef.current;
+      gestureRef.current = null;
+      if (!g) return;
+      if (g.mode === 'box') {
+        const b = boxRef.current;
+        boxRef.current = null;
+        if (b) {
+          const fp = fpForDrawRef.current;
+          const ids = fp ? itemsInBox(fp, b.a.x, b.a.y, b.b.x, b.b.y) : [];
+          if (ids.length > 0) onSelectBox?.(ids, g.additive);
+        }
+        requestDraw();
+      } else if (g.mode === 'move') {
+        const d = moveDeltaRef.current;
+        moveDeltaRef.current = null;
+        if (g.moved && d && (d.x !== 0 || d.y !== 0)) onMoveItems?.(d);
+        else if (!g.moved) {
+          // A plain click on an item: finalise the (non-additive) selection.
+          const world = worldAt(e.clientX, e.clientY);
+          const fp = fpForDrawRef.current;
+          const tol = (6 * dpr) / viewRef.current.scale;
+          const hit = fp ? hitTestFootprint(fp, world, tol) : null;
+          if (hit && !e.shiftKey) onSelect?.(hit, false);
+        }
+        requestDraw();
+      }
+    };
 
     return (
       <div className="ze-canvas-wrap" ref={wrapRef} style={{ position: 'relative' }}>
         <canvas
           ref={canvasRef}
-          style={{ position: 'absolute', inset: 0, cursor: 'crosshair' }}
+          style={{ position: 'absolute', inset: 0, cursor: activeTool === 'select' ? 'default' : 'crosshair' }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import {
   EMPTY_SOURCE, iuToMM, parse, readFootprintFile, mmToIU,
+  moveFootprintItems, rotateFootprintItems, mirrorFootprintItems, deleteFootprintItems, fpItemBBox,
   type PcbFootprint, type PcbTextItem, type Vec2,
 } from '@ziroeda/core';
 import { MenuBar, type Menu } from '../../ui/MenuBar.js';
@@ -88,6 +89,11 @@ export function FootprintEditor({ onExitToHome, initialProject }: {
   const [curName, setCurName] = useState<string | null>(null);
   const [workFp, setWorkFp] = useState<PcbFootprint | null>(null);
 
+  const [selection, setSelection] = useState<ReadonlySet<string>>(new Set());
+  // Whole-footprint snapshot undo/redo (SaveCopyInUndoList), reset per load.
+  const undoStack = useRef<PcbFootprint[]>([]);
+  const redoStack = useRef<PcbFootprint[]>([]);
+
   const [visible, setVisible] = useState<ReadonlySet<string>>(new Set(ALL_FP_LAYERS));
   const [activeLayer, setActiveLayer] = useState('F.Cu');
   const [toggles, setToggles] = useState<Set<string>>(new Set(DEFAULT_TOGGLES));
@@ -154,6 +160,9 @@ export function FootprintEditor({ onExitToHome, initialProject }: {
       setCurLib(libName);
       setCurName(fpName);
       setWorkFp(fp);
+      setSelection(new Set());
+      undoStack.current = [];
+      redoStack.current = [];
       setStatus(`Loaded ${libName}:${fpName}`);
       bump();
       requestAnimationFrame(() => controller.current?.zoomToFit());
@@ -161,6 +170,90 @@ export function FootprintEditor({ onExitToHome, initialProject }: {
       setLoading(null);
     }
   }, [bump]);
+
+  // ----- undoable edits ---------------------------------------------------------
+  /** Commit one edit: snapshot for undo, buffer to the manager, mark modified. */
+  const commit = useCallback((next: PcbFootprint, description: string) => {
+    setWorkFp((prev) => {
+      if (!prev || !curLib || !curName) return prev;
+      undoStack.current.push(prev);
+      redoStack.current = [];
+      manager.current.updateFootprint(curLib, curName, next);
+      bump();
+      setStatus(description);
+      return next;
+    });
+  }, [curLib, curName, bump]);
+
+  const undo = useCallback(() => {
+    setWorkFp((cur) => {
+      const prev = undoStack.current.pop();
+      if (!prev || !cur || !curLib || !curName) return cur;
+      redoStack.current.push(cur);
+      manager.current.updateFootprint(curLib, curName, prev);
+      bump();
+      return prev;
+    });
+    setSelection(new Set());
+  }, [curLib, curName, bump]);
+
+  const redo = useCallback(() => {
+    setWorkFp((cur) => {
+      const next = redoStack.current.pop();
+      if (!next || !cur || !curLib || !curName) return cur;
+      undoStack.current.push(cur);
+      manager.current.updateFootprint(curLib, curName, next);
+      bump();
+      return next;
+    });
+    setSelection(new Set());
+  }, [curLib, curName, bump]);
+
+  // The centre to rotate/mirror about: the selection's combined bounding box.
+  const selectionCenter = useCallback((fp: PcbFootprint, sel: ReadonlySet<string>): Vec2 => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const id of sel) {
+      const b = fpItemBBox(fp, id);
+      if (!b) continue;
+      if (b.minX < minX) minX = b.minX; if (b.minY < minY) minY = b.minY;
+      if (b.maxX > maxX) maxX = b.maxX; if (b.maxY > maxY) maxY = b.maxY;
+    }
+    if (minX > maxX) return { x: 0, y: 0 };
+    return { x: Math.round((minX + maxX) / 2), y: Math.round((minY + maxY) / 2) };
+  }, []);
+
+  const moveSel = useCallback((delta: Vec2) => {
+    if (!workFp || selection.size === 0) return;
+    commit(moveFootprintItems(workFp, selection, delta), 'Move');
+  }, [workFp, selection, commit]);
+
+  const rotateSel = useCallback((ccw: boolean) => {
+    if (!workFp || selection.size === 0) return;
+    commit(rotateFootprintItems(workFp, selection, ccw, selectionCenter(workFp, selection)), ccw ? 'Rotate CCW' : 'Rotate CW');
+  }, [workFp, selection, commit, selectionCenter]);
+
+  const mirrorSel = useCallback(() => {
+    if (!workFp || selection.size === 0) return;
+    commit(mirrorFootprintItems(workFp, selection, selectionCenter(workFp, selection)), 'Mirror');
+  }, [workFp, selection, commit, selectionCenter]);
+
+  const deleteSel = useCallback(() => {
+    if (!workFp || selection.size === 0) return;
+    commit(deleteFootprintItems(workFp, selection), 'Delete');
+    setSelection(new Set());
+  }, [workFp, selection, commit]);
+
+  // Click / box selection from the canvas (PCB_SELECTION_TOOL semantics).
+  const onSelect = useCallback((id: string | null, additive: boolean) => {
+    setSelection((prev) => {
+      if (id === null) return additive ? prev : new Set();
+      if (additive) { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }
+      return new Set([id]);
+    });
+  }, []);
+  const onSelectBox = useCallback((ids: string[], additive: boolean) => {
+    setSelection((prev) => (additive ? new Set([...prev, ...ids]) : new Set(ids)));
+  }, []);
 
   const downloadText = (fileName: string, text: string): void => {
     const url = URL.createObjectURL(new Blob([text], { type: 'application/octet-stream' }));
@@ -260,14 +353,19 @@ export function FootprintEditor({ onExitToHome, initialProject }: {
     switch (id) {
       case 'newFootprint': setNewFpName(''); break;
       case 'save': save(); break;
+      case 'undo': undo(); break;
+      case 'redo': redo(); break;
       case 'zoomRedraw': controller.current?.redraw(); break;
       case 'zoomIn': controller.current?.zoomIn(); break;
       case 'zoomOut': controller.current?.zoomOut(); break;
       case 'zoomFit': controller.current?.zoomToFit(); break;
+      case 'rotateCCW': rotateSel(true); break;
+      case 'rotateCW': rotateSel(false); break;
+      case 'mirrorH': case 'mirrorV': mirrorSel(); break;
       case 'showDatasheet': showDatasheet(); break;
-      default: break; // editing actions are staged (Increment 5)
+      default: break; // remaining editing actions are staged
     }
-  }, [save, showDatasheet]);
+  }, [save, undo, redo, rotateSel, mirrorSel, showDatasheet]);
 
   // ----- library tree (footprint_tree_pane / LIB_TREE) --------------------------
   const libNames = manager.current.libraryNames();
@@ -344,12 +442,17 @@ export function FootprintEditor({ onExitToHome, initialProject }: {
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
-      else if (e.key === 'Escape') { if (activeTool !== 'select') setActiveTool('select'); }
-      else if (!typing && (e.key === 'f' || e.key === 'F')) controller.current?.zoomToFit();
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
+      else if (e.key === 'Escape') { if (activeTool !== 'select') setActiveTool('select'); else setSelection(new Set()); }
+      else if (typing) { /* let inputs handle their own keys */ }
+      else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSel(); }
+      else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); rotateSel(!e.shiftKey); }
+      else if (e.key === 'f' || e.key === 'F') controller.current?.zoomToFit();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [save, activeTool, newLibName, newFpName]);
+  }, [save, undo, redo, deleteSel, rotateSel, activeTool, newLibName, newFpName]);
 
   // ----- menus (menubar_footprint_editor.cpp, working subset) -------------------
   const menus: Menu[] = useMemo(() => [
@@ -374,13 +477,13 @@ export function FootprintEditor({ onExitToHome, initialProject }: {
     {
       label: 'Edit',
       items: [
-        { label: 'Undo', icon: 'undo', disabled: true, shortcut: 'Ctrl+Z' },
-        { label: 'Redo', icon: 'redo', disabled: true, shortcut: 'Ctrl+Y' },
+        { label: 'Undo', icon: 'undo', action: undo, shortcut: 'Ctrl+Z' },
+        { label: 'Redo', icon: 'redo', action: redo, shortcut: 'Ctrl+Y' },
         { sep: true },
         { label: 'Cut', icon: 'cut', disabled: true },
         { label: 'Copy', icon: 'copy', disabled: true },
         { label: 'Paste', icon: 'paste', disabled: true },
-        { label: 'Delete', icon: 'delete', disabled: true, shortcut: 'Del' },
+        { label: 'Delete', icon: 'delete', action: deleteSel, shortcut: 'Del', disabled: selection.size === 0 },
         { sep: true },
         { label: 'Pad Table…', icon: 'padTable', disabled: true },
         { label: 'Default Pad Properties…', disabled: true },
@@ -438,7 +541,7 @@ export function FootprintEditor({ onExitToHome, initialProject }: {
     },
     { label: 'Preferences', items: [{ label: 'Preferences…', disabled: true }] },
     { label: 'Help', items: [{ label: 'About ZiroEDA', action: () => {} }] },
-  ], [save, saveAll, onExitToHome, targetLib, treeSel, curLib, curName, toggles, onLeftToggle, showDatasheet, workFp]);
+  ], [save, saveAll, undo, redo, deleteSel, selection, onExitToHome, targetLib, treeSel, curLib, curName, toggles, onLeftToggle, showDatasheet, workFp]);
 
   // ----- title (UpdateTitle) ----------------------------------------------------
   const modified = curLib && curName ? manager.current.isFootprintModified(curLib, curName) : false;
@@ -553,8 +656,13 @@ export function FootprintEditor({ onExitToHome, initialProject }: {
             footprint={workFp}
             visible={visible}
             drawOpts={drawOpts}
+            selection={selection}
+            activeTool={activeTool}
             onCursorMove={setCursor}
             onScaleChange={setScale}
+            onSelect={onSelect}
+            onSelectBox={onSelectBox}
+            onMoveItems={moveSel}
           />
           {!workFp && (
             <div style={{
@@ -603,6 +711,7 @@ export function FootprintEditor({ onExitToHome, initialProject }: {
       {/* pcbnew-style status bar. */}
       <div className="ze-statusbar" style={{ gap: 18 }}>
         <span className="cell"><b>Pads</b> {padCount}</span>
+        {selection.size > 0 && <span className="cell"><b>Selected</b> {selection.size}</span>}
         <span className="cell grow">{status}</span>
         <span className="cell">{curName ? `${curLib}:${curName}` : '—'}</span>
       </div>

@@ -107,6 +107,28 @@ const shapePoints = (s: PcbShape): Vec2[] => {
   return pts;
 };
 
+const bboxOf = (pts: Vec2[]): FpBBox | null => {
+  if (pts.length === 0) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y;
+  }
+  return { minX, minY, maxX, maxY };
+};
+
+/** Bounding box of one item (for drawing a selection highlight), or null. */
+export function fpItemBBox(fp: PcbFootprint, id: string): FpBBox | null {
+  const ref = parseFpItemId(id);
+  if (!ref) return null;
+  if (ref.kind === 'pad') { const p = fp.pads[ref.index]; return p ? bboxOf(padPoints(p)) : null; }
+  if (ref.kind === 'shape') { const s = fp.shapes[ref.index]; return s ? bboxOf(shapePoints(s)) : null; }
+  const t = fp.texts[ref.index];
+  if (!t) return null;
+  const hw = Math.max(t.text.length, 1) * t.size.x * 0.6, hh = t.size.y / 2;
+  return { minX: t.at.x - hw, minY: t.at.y - hh, maxX: t.at.x + hw, maxY: t.at.y + hh };
+}
+
 /** Bounding box of a footprint's drawable geometry (pads + graphics + text anchors). */
 export function footprintBBox(fp: PcbFootprint): FpBBox | null {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;

@@ -125,7 +125,7 @@ export * from './pcb/types.js';
 export { readBoard, readFootprintFile, rotatePcb, tessellateArc, arcCenter } from './pcb/read-board.js';
 export { serializeFootprint, writeFootprintNode, buildPadNode, buildShapeNode, buildTextNode, FOOTPRINT_FILE_VERSION } from './pcb/write-footprint.js';
 export {
-  fpItemId, parseFpItemId, footprintBBox, hitTestFootprint, itemsInBox,
+  fpItemId, parseFpItemId, footprintBBox, fpItemBBox, hitTestFootprint, itemsInBox,
   moveFootprintItems, rotateFootprintItems, mirrorFootprintItems,
   deleteFootprintItems, addPad, addShape, addText, replaceFootprintItem,
   type FpItemKind, type FpItemRef, type FpBBox,
