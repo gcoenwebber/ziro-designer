@@ -547,5 +547,9 @@ html, body { background: var(--chrome-bg2); }
 .ze-pref-hotkeys th, .ze-pref-hotkeys td { padding: 4px 8px; text-align: left; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
 .ze-pref-hotkeys th { color: #9aa0a6; font-weight: 600; }
 .ze-pref-colorgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 16px; }
+.ze-pref-hint { font-size: 12px; color: #9aa0a6; margin-bottom: 4px; }
+.ze-pref-mouse { border-collapse: collapse; font-size: 13px; }
+.ze-pref-mouse td { padding: 3px 12px 3px 0; }
+.ze-pref-mouse td:first-child { color: #9aa0a6; white-space: nowrap; }
 .ze-pref-colorrow { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .ze-pref-colorrow input[type='color'] { width: 34px; height: 20px; padding: 0; border: 1px solid var(--chrome-border); background: none; }

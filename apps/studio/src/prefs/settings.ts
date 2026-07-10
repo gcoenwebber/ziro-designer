@@ -146,6 +146,8 @@ export interface EeschemaSettings {
     default_bus_thickness: number;    // mils
     default_text_size: number;        // mils
     line_mode: LineMode;
+    /** editing.arc_edit_mode: 0 keep-center/adjust-radius, 1 keep-endpoints, 2 keep-center+radius. */
+    arc_edit_mode: 0 | 1 | 2;
     auto_start_wires: boolean;
     repeat_label_increment: number;
     default_repeat_offset_x: number;  // mils
@@ -153,10 +155,18 @@ export interface EeschemaSettings {
     field_names: TemplateFieldName[];
     default_sheet_border_color: string;
     default_sheet_background_color: string;
+    /** drawing.new_power_symbols: 0 Default, 1 Global, 2 Local (POWER_SYMBOLS). */
+    new_power_symbols: 0 | 1 | 2;
   };
   input: {
     drag_is_move: boolean;
     esc_clears_net_highlight: boolean;
+    /** input.allow_unconstrained_pin_swaps: allow swapping symbol pin positions. */
+    allow_unconstrained_pin_swaps: boolean;
+  };
+  /** system.never_show_rescue_dialog (RescueNeverShow). */
+  system: {
+    never_show_rescue_dialog: boolean;
   };
   selection: {
     thickness: number;                // mils
@@ -229,6 +239,7 @@ export const EESCHEMA_DEFAULTS: EeschemaSettings = {
     default_bus_thickness: 12,
     default_text_size: 50,
     line_mode: 1,
+    arc_edit_mode: 0,
     auto_start_wires: true,
     repeat_label_increment: 1,
     default_repeat_offset_x: 0,
@@ -236,10 +247,15 @@ export const EESCHEMA_DEFAULTS: EeschemaSettings = {
     field_names: [],
     default_sheet_border_color: '',
     default_sheet_background_color: '',
+    new_power_symbols: 0,
   },
   input: {
     drag_is_move: false,
     esc_clears_net_highlight: true,
+    allow_unconstrained_pin_swaps: false,
+  },
+  system: {
+    never_show_rescue_dialog: false,
   },
   selection: {
     thickness: 3,
