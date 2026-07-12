@@ -113,6 +113,9 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
   const [activeTool, setActiveTool] = useState('select');
   // Selected board items (PCB_SELECTION_TOOL's selection), by `${kind}:${index}` id.
   const [selection, setSelection] = useState<ReadonlySet<string>>(new Set());
+  // Disambiguation menu (PCB_SELECTION_TOOL::doSelectionMenu): shown at a click
+  // that hits several equally-plausible items so the user can pick one.
+  const [disambig, setDisambig] = useState<{ x: number; y: number; ids: string[]; additive: boolean } | null>(null);
   const [show3D, setShow3D] = useState(false);
   const viewer3dRef = useRef<HTMLDivElement>(null);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
@@ -126,6 +129,11 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
   selForDrawRef.current = selection;
   // The in-progress rubber-band marquee (world coords), read by the overlay pass.
   const boxRef = useRef<{ a: { x: number; y: number }; b: { x: number; y: number } } | null>(null);
+  // Item the disambiguation menu is hovering — brightened in the overlay pass.
+  const hoverRef = useRef<string | null>(null);
+  // Mirror of `disambig` open-state for the global Escape handler (no re-subscribe).
+  const disambigRef = useRef(false);
+  disambigRef.current = !!disambig;
   const sceneRef = useRef<BoardScene | null>(null);
   const rafRef = useRef(0);
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
@@ -297,6 +305,20 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
       ctx.fillRect(x, y, w, h);
       ctx.strokeRect(x, y, w, h);
     }
+    // Disambiguation hover: brighten the item the menu is pointing at.
+    const hover = hoverRef.current;
+    if (brd && hover) {
+      const hb = boardItemBBox(brd, hover);
+      if (hb) {
+        const toPx = (p: { x: number; y: number }): { x: number; y: number } => ({ x: p.x * v.scale + v.tx, y: p.y * v.scale + v.ty });
+        const q0 = toPx({ x: hb.minX, y: hb.minY }), q1 = toPx({ x: hb.maxX, y: hb.maxY });
+        const pad = 2 * dpr;
+        ctx.strokeStyle = 'rgba(120,230,255,1)';
+        ctx.lineWidth = Math.max(1.5, 1.5 * dpr);
+        ctx.strokeRect(Math.min(q0.x, q1.x) - pad, Math.min(q0.y, q1.y) - pad,
+          Math.abs(q1.x - q0.x) + 2 * pad, Math.abs(q1.y - q0.y) + 2 * pad);
+      }
+    }
     setScale(v.scale);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startCrispRender]);
@@ -312,8 +334,8 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
     requestDraw();
   }, [visible, drawOpts, requestDraw]);
 
-  // The selection lives only in the overlay, not the raster — just repaint.
-  useEffect(() => { requestDraw(); }, [selection, requestDraw]);
+  // The selection / disambiguation hover live only in the overlay — just repaint.
+  useEffect(() => { requestDraw(); }, [selection, disambig, requestDraw]);
 
   const zoomToFit = useCallback(() => {
     const canvas = canvasRef.current;
@@ -434,18 +456,34 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
   };
   const tolOf = (): number => (5 * dpr) / viewRef.current.scale; // ~5px, like COLLECTORS_GUIDE
 
-  // PCB_SELECTION_TOOL::selectPoint: pick the best filtered candidate under the
-  // cursor and update the selection. Shift adds/toggles; a plain click clears.
-  const clickSelect = (clientX: number, clientY: number, additive: boolean): void => {
-    const w = worldAt(clientX, clientY);
-    const brd = boardRef.current;
-    if (!w || !brd) return;
-    const id = boardHitCandidates(brd, w, tolOf()).filter(passesFilter)[0] ?? null;
+  // Set the selection to (or toggle) a single item id (null clears).
+  const applySelect = (id: string | null, additive: boolean): void => {
     setSelection((prev) => {
       const next = new Set(additive ? prev : []);
       if (id) { if (additive && next.has(id)) next.delete(id); else next.add(id); }
       return next;
     });
+  };
+
+  // PCB_SELECTION_TOOL::selectPoint: pick the best filtered candidate under the
+  // cursor. When several items are equally plausible (same priority tier after
+  // guessSelectionCandidates drops the obvious container), pop the
+  // disambiguation menu instead of guessing. Shift adds/toggles.
+  const clickSelect = (clientX: number, clientY: number, additive: boolean): void => {
+    const w = worldAt(clientX, clientY);
+    const brd = boardRef.current;
+    if (!w || !brd) return;
+    const cands = boardHitCandidates(brd, w, tolOf()).filter(passesFilter);
+    if (cands.length === 0) { applySelect(null, additive); return; }
+    // guessSelectionCandidates: keep only the top-priority tier (a track over a
+    // footprint resolves to the track, no menu); ambiguous only within a tier.
+    const rankOf = (id: string): number => {
+      const k = parseBoardItemId(id)?.kind;
+      return k === 'zone' ? 2 : k === 'footprint' ? 1 : 0;
+    };
+    const tier = cands.filter((c) => rankOf(c) === rankOf(cands[0]!));
+    if (tier.length <= 1) { applySelect(cands[0]!, additive); return; }
+    setDisambig({ x: clientX, y: clientY, ids: cands, additive });
   };
 
   const onPointerDown = (e: React.PointerEvent): void => {
@@ -515,7 +553,11 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'f' || e.key === 'F') zoomToFit();
-      if (e.key === 'Escape') { setShow3D(false); setSelection(new Set()); }
+      if (e.key === 'Escape') {
+        // Escape first dismisses the disambiguation menu, then clears selection.
+        if (disambigRef.current) { hoverRef.current = null; setDisambig(null); }
+        else { setShow3D(false); setSelection(new Set()); }
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -951,6 +993,39 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
         </div>
       )}
 
+      {/* Disambiguation menu (PCB_SELECTION_TOOL::doSelectionMenu): pick which of
+          several overlapping items to select; hovering a row previews it. */}
+      {disambig && board && (
+        <>
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 60 }}
+            onMouseDown={() => { hoverRef.current = null; setDisambig(null); requestDraw(); }}
+          />
+          <div
+            style={{
+              position: 'fixed', left: Math.min(disambig.x, window.innerWidth - 220), top: disambig.y,
+              zIndex: 61, background: '#26262b', border: '1px solid #444', borderRadius: 4,
+              minWidth: 190, padding: '4px 0', fontSize: 12, boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div style={{ padding: '2px 12px 4px', opacity: 0.6 }}>Clarify Selection</div>
+            {disambig.ids.map((id) => (
+              <div
+                key={id}
+                className="ze-tree-item"
+                style={{ padding: '3px 12px', cursor: 'pointer' }}
+                onMouseEnter={() => { hoverRef.current = id; requestDraw(); }}
+                onMouseLeave={() => { if (hoverRef.current === id) { hoverRef.current = null; requestDraw(); } }}
+                onClick={() => { hoverRef.current = null; applySelect(id, disambig.additive); setDisambig(null); }}
+              >
+                {describeBoardItem(board, id)}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
       {/* pcbnew's two-part status bar: item counts row, then position row. */}
       <div className="ze-statusbar" style={{ gap: 18 }}>
         <span className="cell"><b>Pads</b> {board?.footprints.reduce((n, f) => n + f.pads.length, 0) ?? 0}</span>
@@ -973,6 +1048,23 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
       </div>
     </div>
   );
+}
+
+/** One-line label for a board item — the disambiguation menu row text
+ *  (KiCad's EDA_ITEM::GetItemDescription). */
+function describeBoardItem(board: Board, id: string): string {
+  const r = parseBoardItemId(id);
+  if (!r) return id;
+  const net = (c: number): string => board.nets.get(c) || `net ${c}`;
+  switch (r.kind) {
+    case 'track': { const t = board.tracks[r.index]; return t ? `Track ${t.layer} · ${net(t.net)}` : 'Track'; }
+    case 'arc': { const a = board.arcs[r.index]; return a ? `Arc ${a.layer} · ${net(a.net)}` : 'Arc'; }
+    case 'via': { const v = board.vias[r.index]; return v ? `Via · ${net(v.net)}` : 'Via'; }
+    case 'footprint': { const f = board.footprints[r.index]; return f ? `Footprint ${f.reference || f.lib}` : 'Footprint'; }
+    case 'zone': { const z = board.zones[r.index]; return z ? `Zone · ${z.netName ?? net(z.net)}` : 'Zone'; }
+    case 'shape': { const s = board.shapes[r.index]; return s ? `Graphic (${s.kind}) · ${s.layer}` : 'Graphic'; }
+    case 'text': { const t = board.texts[r.index]; return t ? `Text "${t.text}"` : 'Text'; }
+  }
 }
 
 /** Read-only summary of the current selection for the Properties panel — the
