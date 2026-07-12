@@ -5,6 +5,7 @@ import { SchematicEditor, type PickedFile } from './editors/schematic/SchematicE
 import { PcbEditor } from './editors/pcb/PcbEditor.js';
 import { SymbolEditor } from './editors/symbol/SymbolEditor.js';
 import { FootprintEditor } from './editors/footprint/FootprintEditor.js';
+import { DrawingSheetEditor } from './editors/drawingsheet/DrawingSheetEditor.js';
 import { storageAvailable, listProjects, loadProject, updateProjectFiles } from './home/projectStore.js';
 import { saveSession, loadSession } from './home/session.js';
 import './ui/shell.css';
@@ -29,7 +30,7 @@ const pcbBasename = (p: string): string => p.split('/').pop()!.split('\\').pop()
  * with CSS so heavy documents are parsed only once.
  */
 export function App(): JSX.Element {
-  const [view, setView] = useState<'home' | 'schematic' | 'pcb' | 'symbols' | 'footprints'>('home');
+  const [view, setView] = useState<'home' | 'schematic' | 'pcb' | 'symbols' | 'footprints' | 'drawingsheet'>('home');
   const [projectFiles, setProjectFiles] = useState<PickedFile[] | null>(null);
   const [startFile, setStartFile] = useState<string | null>(null);
   // A board opened directly (no schematic project around it).
@@ -38,6 +39,7 @@ export function App(): JSX.Element {
   const [pcbMounted, setPcbMounted] = useState(false);
   const [symMounted, setSymMounted] = useState(false);
   const [fpMounted, setFpMounted] = useState(false);
+  const [dsMounted, setDsMounted] = useState(false);
   // "Add symbol to schematic": the symbol editor hands eeschema a symbol to place.
   const [placeRequest, setPlaceRequest] = useState<{ lib: LibSymbol; nonce: number } | null>(null);
   // Restore the last view on reload: reopen the most-recently-opened project
@@ -62,6 +64,7 @@ export function App(): JSX.Element {
         else if (s.view === 'pcb') setPcbMounted(true);
         else if (s.view === 'symbols') setSymMounted(true);
         else if (s.view === 'footprints') setFpMounted(true);
+        else if (s.view === 'drawingsheet') setDsMounted(true);
         setView(s.view);
       } catch { /* fall back to home */ } finally {
         setRestoring(false);
@@ -164,6 +167,9 @@ export function App(): JSX.Element {
           if (files) { setProjectFiles(files); setStandalonePcb(null); }
           setFpMounted(true); setView('footprints');
         }}
+        onOpenDrawingSheetEditor={() => {
+          setDsMounted(true); setView('drawingsheet');
+        }}
       />
     );
   }
@@ -210,6 +216,14 @@ export function App(): JSX.Element {
           <FootprintEditor
             onExitToHome={goHome}
             initialProject={projectFiles}
+          />
+        </div>
+      )}
+      {dsMounted && (
+        <div style={{ display: view === 'drawingsheet' ? 'contents' : 'none' }}>
+          <DrawingSheetEditor
+            onExitToHome={goHome}
+            projectName={projectName}
           />
         </div>
       )}
