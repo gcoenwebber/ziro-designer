@@ -137,3 +137,8 @@ export {
   footprintStringChild, patchPad,
   type FpItemKind, type FpItemRef, type FpBBox, type PadEdit,
 } from './pcb/edit-footprint.js';
+export {
+  boardItemId, parseBoardItemId, boardItemBBox,
+  hitTestBoard, boardHitCandidates, boardItemsInBox,
+  type BoardItemKind, type BoardItemRef, type BoardBBox,
+} from './pcb/edit-board.js';
