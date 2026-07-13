@@ -1061,9 +1061,9 @@ export function HomePage({
                 {/* project root (.kicad_pro): bold, selectable, and its twisty
                     collapses the whole tree — like KiCad's tree root. */}
                 <div
-                  className={`ze-tree-item root${selected === ' root' ? ' active' : ''}`}
+                  className={`ze-tree-item root${selected === '\0root' ? ' active' : ''}`}
                   style={{ cursor: 'pointer' }}
-                  onClick={() => setSelected(' root')}
+                  onClick={() => setSelected('\0root')}
                 >
                   <span
                     className={`twisty expandable${rootOpen ? ' open' : ''}`}
