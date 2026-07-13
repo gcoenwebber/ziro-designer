@@ -17,8 +17,19 @@ import { setBitmapInvalidate } from './wksBitmap.js';
 
 const MM = 10000;
 
+// KiCad shows a full crosshair as the editing cursor and a pencil while a draw
+// tool is active (see the GAL cursor in pl_editor). A plain `crosshair` gives the
+// "+"; this small pencil SVG gives the drawing cursor, hot-spot at its tip.
+const PENCIL_SVG =
+  "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>" +
+  "<path d='M3.5 20.5l3.2-1 11-11-2.2-2.2-11 11z' fill='#ffd54a' stroke='#1b1b1b' stroke-width='1'/>" +
+  "<path d='M14.8 5.1l2.2 2.2 1.9-1.9a1.3 1.3 0 0 0 0-1.9l-.3-.3a1.3 1.3 0 0 0-1.9 0z' fill='#c8322d' stroke='#1b1b1b' stroke-width='1'/>" +
+  "<path d='M3.5 20.5l1.1-2.9 1.8 1.1z' fill='#1b1b1b'/></svg>";
+const PENCIL_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(PENCIL_SVG)}") 3 21, crosshair`;
+
 export interface DrawingSheetCanvasController {
   zoomToFit: () => void;
+  zoomToSelection: () => void;
   zoomIn: () => void;
   zoomOut: () => void;
   redraw: () => void;
@@ -34,6 +45,8 @@ export interface DrawingSheetCanvasProps {
   showGrid: boolean;
   /** Grid step in IU. */
   gridIU: number;
+  /** Draw a full-window crosshair at the cursor (pl_editor's "Full window crosshair"). */
+  fullCrosshair?: boolean;
   onCursorMove?: (p: Vec2 | null) => void;
   onScaleChange?: (scale: number) => void;
   onSelect?: (src: number | null, additive: boolean) => void;
@@ -51,7 +64,7 @@ const ONE_CLICK = new Set(['dsAddText', 'dsAddBitmap', 'appendSheet']);
 export const DrawingSheetCanvas = forwardRef<DrawingSheetCanvasController, DrawingSheetCanvasProps>(
   function DrawingSheetCanvas(props, ref) {
     const {
-      draws, pageW, pageH, selection, activeTool, showGrid, gridIU,
+      draws, pageW, pageH, selection, activeTool, showGrid, gridIU, fullCrosshair,
       onCursorMove, onScaleChange, onSelect, onSelectBox, onMoveItems, onPlacePoint, onPlaceSegment,
     } = props;
 
@@ -69,6 +82,7 @@ export const DrawingSheetCanvas = forwardRef<DrawingSheetCanvasController, Drawi
     const boxRef = useRef<{ a: Vec2; b: Vec2 } | null>(null);
     const firstPtRef = useRef<Vec2 | null>(null);
     const hoverRef = useRef<Vec2 | null>(null);
+    const cursorPxRef = useRef<{ x: number; y: number } | null>(null);
 
     const draw = useCallback(() => {
       const canvas = canvasRef.current;
@@ -92,13 +106,14 @@ export const DrawingSheetCanvas = forwardRef<DrawingSheetCanvasController, Drawi
 
       const worldPen = 1 / v.scale; // 1 device px in world units
 
-      if (showGrid && gridIU > 0 && gridIU * v.scale >= 4) {
-        ctx.strokeStyle = 'rgba(0,0,0,0.10)';
-        ctx.lineWidth = worldPen;
-        ctx.beginPath();
-        for (let x = 0; x <= pageW + 1; x += gridIU) { ctx.moveTo(x, 0); ctx.lineTo(x, pageH); }
-        for (let y = 0; y <= pageH + 1; y += gridIU) { ctx.moveTo(0, y); ctx.lineTo(pageW, y); }
-        ctx.stroke();
+      // KiCad's GAL draws the grid as dots (a "grained" look), not lines.
+      if (showGrid && gridIU > 0 && gridIU * v.scale >= 8) {
+        ctx.fillStyle = 'rgba(0,0,0,0.32)';
+        const r = Math.max(worldPen * 0.9, gridIU * 0.02); // ~1.8 device-px dot
+        const d = r * 2;
+        for (let x = 0; x <= pageW + 1; x += gridIU) {
+          for (let y = 0; y <= pageH + 1; y += gridIU) ctx.fillRect(x - r, y - r, d, d);
+        }
       }
 
       // Clip page content to the page rectangle, like KiCad.
@@ -161,9 +176,20 @@ export const DrawingSheetCanvas = forwardRef<DrawingSheetCanvasController, Drawi
         ctx.setLineDash([]);
       }
 
+      // Full-window crosshair at the cursor (pl_editor "Full window crosshair").
+      const cp = cursorPxRef.current;
+      if (fullCrosshair && cp) {
+        ctx.strokeStyle = 'rgba(90,160,255,0.55)';
+        ctx.lineWidth = Math.max(1, dpr);
+        ctx.beginPath();
+        ctx.moveTo(cp.x, 0); ctx.lineTo(cp.x, canvas.height);
+        ctx.moveTo(0, cp.y); ctx.lineTo(canvas.width, cp.y);
+        ctx.stroke();
+      }
+
       setScaleState(v.scale);
       onScaleChange?.(v.scale);
-    }, [pageW, pageH, showGrid, gridIU, activeTool, dpr, onScaleChange]);
+    }, [pageW, pageH, showGrid, gridIU, activeTool, dpr, fullCrosshair, onScaleChange]);
 
     const requestDraw = useCallback(() => {
       cancelAnimationFrame(rafRef.current);
@@ -191,6 +217,33 @@ export const DrawingSheetCanvas = forwardRef<DrawingSheetCanvasController, Drawi
       requestDraw();
     }, [pageW, pageH, requestDraw]);
 
+    // Zoom to fit the current selection (pl_editor "Zoom to Selection").
+    const zoomToSelection = useCallback(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      let box: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
+      for (const src of selRef.current) {
+        const b = wksItemBBox(drawsRef.current, src);
+        if (!b) continue;
+        box = box ? {
+          minX: Math.min(box.minX, b.minX), minY: Math.min(box.minY, b.minY),
+          maxX: Math.max(box.maxX, b.maxX), maxY: Math.max(box.maxY, b.maxY),
+        } : b;
+      }
+      if (!box) return;
+      const margin = 6 * MM;
+      const bw = box.maxX - box.minX + margin * 2;
+      const bh = box.maxY - box.minY + margin * 2;
+      const s = Math.min(canvas.width / Math.max(bw, 1), canvas.height / Math.max(bh, 1));
+      const cx = (box.minX + box.maxX) / 2, cy = (box.minY + box.maxY) / 2;
+      viewRef.current = {
+        scale: s > 0 && Number.isFinite(s) ? s : viewRef.current.scale,
+        tx: canvas.width / 2 - cx * s,
+        ty: canvas.height / 2 - cy * s,
+      };
+      requestDraw();
+    }, [requestDraw]);
+
     const zoomStep = useCallback((factor: number) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -205,10 +258,11 @@ export const DrawingSheetCanvas = forwardRef<DrawingSheetCanvasController, Drawi
 
     useImperativeHandle(ref, () => ({
       zoomToFit,
+      zoomToSelection,
       zoomIn: () => zoomStep(1.3),
       zoomOut: () => zoomStep(1 / 1.3),
       redraw: () => requestDraw(),
-    }), [zoomToFit, zoomStep, requestDraw]);
+    }), [zoomToFit, zoomToSelection, zoomStep, requestDraw]);
 
     // Size to container; fit on first layout.
     const fittedRef = useRef(false);
@@ -298,6 +352,9 @@ export const DrawingSheetCanvas = forwardRef<DrawingSheetCanvasController, Drawi
     const onPointerMove = (e: React.PointerEvent): void => {
       const world = worldAt(e.clientX, e.clientY);
       onCursorMove?.(world);
+      const rect = canvasRef.current!.getBoundingClientRect();
+      cursorPxRef.current = { x: (e.clientX - rect.left) * dpr, y: (e.clientY - rect.top) * dpr };
+      if (fullCrosshair) requestDraw();
       if (firstPtRef.current) { hoverRef.current = world; requestDraw(); }
       const g = gestureRef.current;
       if (!g) return;
@@ -347,16 +404,18 @@ export const DrawingSheetCanvas = forwardRef<DrawingSheetCanvasController, Drawi
     // but clear our local rubber band when the tool changes).
     useEffect(() => { firstPtRef.current = null; hoverRef.current = null; requestDraw(); }, [activeTool, requestDraw]);
 
+    // Pencil while a draw tool is active; a "+" crosshair otherwise (KiCad's cursor).
     const placing = TWO_CLICK.has(activeTool) || ONE_CLICK.has(activeTool);
+    const cursor = placing ? PENCIL_CURSOR : 'crosshair';
     return (
       <div className="ze-canvas-wrap" ref={wrapRef} style={{ position: 'relative', flex: 1, minWidth: 0 }}>
         <canvas
           ref={canvasRef}
-          style={{ position: 'absolute', inset: 0, cursor: placing ? 'crosshair' : 'default' }}
+          style={{ position: 'absolute', inset: 0, cursor }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onPointerLeave={() => onCursorMove?.(null)}
+          onPointerLeave={() => { onCursorMove?.(null); cursorPxRef.current = null; if (fullCrosshair) requestDraw(); }}
         />
       </div>
     );

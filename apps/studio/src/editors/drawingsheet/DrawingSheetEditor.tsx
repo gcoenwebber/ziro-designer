@@ -90,6 +90,11 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
   const [status, setStatus] = useState('Loaded default drawing sheet');
   const [panelWidth, setPanelWidth] = useState(230);
   const [showPageDialog, setShowPageDialog] = useState(false);
+  const [showPreviewDialog, setShowPreviewDialog] = useState(false);
+  const [showInspector, setShowInspector] = useState(false);
+  // pl_editor's title-block display: 'preview' resolves ${…} to sample values,
+  // 'edit' shows the raw field templates (Show title block in preview/edit mode).
+  const [titleMode, setTitleMode] = useState<'preview' | 'edit'>('preview');
 
   const controller = useRef<DrawingSheetCanvasController>(null);
   const openInputRef = useRef<HTMLInputElement>(null);
@@ -98,6 +103,8 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
   // Anchor point captured when the bitmap tool is clicked, consumed once the
   // user chooses an image file (KiCad's Place → Image opens a file dialog).
   const pendingBitmapPos = useRef<WksPoint | null>(null);
+  // Internal clipboard for Edit → Cut / Copy / Paste (pl_editor clipboard).
+  const clipboard = useRef<WksItem[]>([]);
 
   // ---- page geometry ----
   const pageMM = useMemo<[number, number]>(() => {
@@ -113,7 +120,8 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
     title: projectName || 'Drawing Sheet', rev: 'A',
     date: new Date().toISOString().slice(0, 10), company: '', comments: [],
     paper, fileName: projectName ? `${projectName}.kicad_sch` : '', sheetPath: '/', appVersion: 'ZiroEDA',
-  }), [pageNumber, projectName, paper]);
+    rawText: titleMode === 'edit',
+  }), [pageNumber, projectName, paper, titleMode]);
 
   const draws = useMemo(
     () => layoutDrawingSheet(sheet, { widthMM: pageMM[0], heightMM: pageMM[1] }, resolveCtx),
@@ -281,6 +289,27 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
     setSelection(new Set(copies.map((_, k) => sheet.items.length + k)));
   }, [sheet, selection, commit]);
 
+  const copySelection = useCallback(() => {
+    if (selection.size === 0) return;
+    clipboard.current = [...selection].sort((a, b) => a - b).map((i) => structuredClone(sheet.items[i]!));
+    setStatus(`Copied ${clipboard.current.length} item${clipboard.current.length === 1 ? '' : 's'}`);
+  }, [sheet, selection]);
+
+  const pasteClipboard = useCallback(() => {
+    if (clipboard.current.length === 0) return;
+    const off = { x: mmToIU(2), y: mmToIU(2) };
+    const copies = clipboard.current.map((it) => translateItem(structuredClone(it), off));
+    const next = { ...sheet, items: [...sheet.items, ...copies] };
+    commit(next, `Pasted ${copies.length} item${copies.length === 1 ? '' : 's'}`);
+    setSelection(new Set(copies.map((_, k) => sheet.items.length + k)));
+  }, [sheet, commit]);
+
+  const cutSelection = useCallback(() => {
+    if (selection.size === 0) return;
+    copySelection();
+    deleteSelection();
+  }, [selection, copySelection, deleteSelection]);
+
   // ---- property editing ----
   const selectedIndex = selection.size === 1 ? [...selection][0]! : -1;
   const selectedItem = selectedIndex >= 0 ? sheet.items[selectedIndex] : undefined;
@@ -320,6 +349,8 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
       case 'zoomIn': controller.current?.zoomIn(); break;
       case 'zoomOut': controller.current?.zoomOut(); break;
       case 'zoomFit': controller.current?.zoomToFit(); break;
+      case 'zoomTool': controller.current?.zoomToSelection(); break;
+      case 'inspect': setShowInspector(true); break;
       default: break;
     }
   }, [newSheet, save, undo, redo]);
@@ -339,6 +370,10 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicateSelection(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') { copySelection(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x') { e.preventDefault(); cutSelection(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') { pasteClipboard(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); setSelection(new Set(sheet.items.map((_, i) => i))); }
       else if (typing) { /* let inputs handle their keys */ }
       else if (e.key === 'Escape') { if (activeTool !== 'select') setActiveTool('select'); else setSelection(new Set()); }
       else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(); }
@@ -349,7 +384,7 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [save, undo, redo, duplicateSelection, deleteSelection, activeTool]);
+  }, [save, undo, redo, duplicateSelection, deleteSelection, copySelection, cutSelection, pasteClipboard, sheet.items, activeTool]);
 
   // ---- menus (menubar_pl_editor.cpp working subset) ----
   const menus: Menu[] = useMemo(() => [
@@ -376,10 +411,13 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
         { label: 'Undo', icon: 'undo', action: undo, shortcut: 'Ctrl+Z' },
         { label: 'Redo', icon: 'redo', action: redo, shortcut: 'Ctrl+Y' },
         { sep: true },
+        { label: 'Cut', icon: 'cut', action: cutSelection, shortcut: 'Ctrl+X', disabled: selection.size === 0 },
+        { label: 'Copy', icon: 'copy', action: copySelection, shortcut: 'Ctrl+C', disabled: selection.size === 0 },
+        { label: 'Paste', icon: 'paste', action: pasteClipboard, shortcut: 'Ctrl+V' },
         { label: 'Duplicate', action: duplicateSelection, shortcut: 'Ctrl+D', disabled: selection.size === 0 },
         { label: 'Delete', icon: 'dsDelete', action: deleteSelection, shortcut: 'Del', disabled: selection.size === 0 },
         { sep: true },
-        { label: 'Select All', action: () => setSelection(new Set(sheet.items.map((_, i) => i))) },
+        { label: 'Select All', action: () => setSelection(new Set(sheet.items.map((_, i) => i))), shortcut: 'Ctrl+A' },
       ],
     },
     {
@@ -388,12 +426,21 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
         { label: 'Zoom In', icon: 'zoomIn', action: () => controller.current?.zoomIn() },
         { label: 'Zoom Out', icon: 'zoomOut', action: () => controller.current?.zoomOut() },
         { label: 'Zoom to Fit', icon: 'zoomFit', action: () => controller.current?.zoomToFit(), shortcut: 'F' },
+        { label: 'Zoom to Selection', icon: 'zoomTool', action: () => controller.current?.zoomToSelection(), disabled: selection.size === 0 },
+        { label: 'Redraw View', icon: 'zoomRedraw', action: () => controller.current?.redraw() },
         { sep: true },
         { label: `${toggles.has('toggleGrid') ? '✓ ' : ''}Show Grid`, action: () => onLeftToggle('toggleGrid') },
+        { label: `${toggles.has('crosshairFull') ? '✓ ' : ''}Full-Window Crosshair`, action: () => onLeftToggle('crosshairFull') },
         { sep: true },
         { label: `${toggles.has('unitsMm') ? '✓ ' : ''}Millimetres`, action: () => onLeftToggle('unitsMm') },
         { label: `${toggles.has('unitsInches') ? '✓ ' : ''}Inches`, action: () => onLeftToggle('unitsInches') },
         { label: `${toggles.has('unitsMils') ? '✓ ' : ''}Mils`, action: () => onLeftToggle('unitsMils') },
+        { sep: true },
+        { label: `${titleMode === 'preview' ? '✓ ' : ''}Show Title Block in Preview Mode`, action: () => setTitleMode('preview') },
+        { label: `${titleMode === 'edit' ? '✓ ' : ''}Show Title Block in Edit Mode`, action: () => setTitleMode('edit') },
+        { label: 'Page Preview Settings…', action: () => setShowPreviewDialog(true) },
+        { sep: true },
+        { label: 'Show Design Inspector', icon: 'inspect', action: () => setShowInspector(true) },
       ],
     },
     {
@@ -407,9 +454,21 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
         { label: 'Append Existing Drawing Sheet…', icon: 'appendSheet', action: () => appendInputRef.current?.click() },
       ],
     },
-    { label: 'Preferences', items: [{ label: 'Page Settings…', action: () => setShowPageDialog(true) }] },
+    {
+      label: 'Inspect',
+      items: [
+        { label: 'Show Design Inspector', icon: 'inspect', action: () => setShowInspector(true) },
+      ],
+    },
+    {
+      label: 'Preferences',
+      items: [
+        { label: 'Page Settings…', action: () => setShowPageDialog(true) },
+        { label: 'Page Preview Settings…', action: () => setShowPreviewDialog(true) },
+      ],
+    },
     { label: 'Help', items: [{ label: 'About ZiroEDA', action: () => setStatus('ZiroEDA Drawing Sheet Editor') }] },
-  ], [newSheet, save, saveAs, undo, redo, duplicateSelection, deleteSelection, selection, sheet.items, toggles, onLeftToggle, onExitToHome]);
+  ], [newSheet, save, saveAs, undo, redo, cutSelection, copySelection, pasteClipboard, duplicateSelection, deleteSelection, selection, sheet.items, toggles, onLeftToggle, titleMode, onExitToHome]);
 
   // ---- title ----
   const title = `${dirty ? '*' : ''}${fileName} — Drawing Sheet Editor`;
@@ -464,6 +523,13 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
           <option value={1}>Page 1</option>
           <option value={2}>Page 2</option>
         </select>
+        <label className="ze-muted" style={{ fontSize: 12, marginRight: 4 }}>Title block</label>
+        <select className="ze-select" value={titleMode} onChange={(e) => setTitleMode(e.target.value as 'preview' | 'edit')}
+          title="Show title block in preview mode (sample values) or edit mode (raw ${…} fields)" style={{ margin: '0 6px' }}>
+          <option value="preview">Preview mode</option>
+          <option value="edit">Edit mode</option>
+        </select>
+        <button className="ze-btn" style={{ margin: '0 6px' }} title="Show Design Inspector" onClick={() => setShowInspector(true)}>Inspect</button>
       </div>
 
       <div className="ze-body">
@@ -500,6 +566,7 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
           activeTool={activeTool}
           showGrid={toggles.has('toggleGrid')}
           gridIU={gridIU}
+          fullCrosshair={toggles.has('crosshairFull')}
           onCursorMove={setCursor}
           onScaleChange={setScale}
           onSelect={onSelect}
@@ -548,6 +615,22 @@ export function DrawingSheetEditor({ onExitToHome, projectName }: {
           paper={paper} portrait={portrait}
           onCancel={() => setShowPageDialog(false)}
           onOk={(p, port) => { setPaper(p); setPortrait(port); setShowPageDialog(false); setStatus(`Page: ${p} ${port ? 'portrait' : 'landscape'}`); requestAnimationFrame(() => controller.current?.zoomToFit()); }}
+        />
+      )}
+
+      {showPreviewDialog && (
+        <PreviewSettingsDialog
+          pageNumber={pageNumber} titleMode={titleMode}
+          onClose={() => setShowPreviewDialog(false)}
+          onPageNumber={setPageNumber} onTitleMode={setTitleMode}
+        />
+      )}
+
+      {showInspector && (
+        <DesignInspector
+          items={sheet.items} selection={selection}
+          onClose={() => setShowInspector(false)}
+          onSelect={(i) => { setSelection(new Set([i])); requestAnimationFrame(() => controller.current?.zoomToSelection()); }}
         />
       )}
     </div>
@@ -615,6 +698,10 @@ function ItemProperties({ item, onChange }: { item: WksItem; onChange: (patch: P
           {item.type === 'text' && <Row label="Label step"><NumField step={1} value={item.incrlabel} onChange={(n) => onChange({ incrlabel: Math.round(n) })} /></Row>}
         </>
       )}
+      <Row label="Comment">
+        <input className="ze-search" style={inputStyle} value={item.comment}
+          onKeyDown={(e) => e.stopPropagation()} onChange={(e) => onChange({ comment: e.target.value })} />
+      </Row>
     </>
   );
 
@@ -647,6 +734,9 @@ function ItemProperties({ item, onChange }: { item: WksItem; onChange: (patch: P
           </select>
         </Row>
         <Row label="Rotation"><NumField step={90} value={t.rotate} onChange={(rotate) => onChange({ rotate } as Partial<WksItem>)} /></Row>
+        <Row label="Text pen (mm)"><NumField step={0.05} value={t.lineWidth} onChange={(lineWidth) => onChange({ lineWidth } as Partial<WksItem>)} /></Row>
+        <Row label="Max width (mm)"><NumField value={t.maxlen} onChange={(maxlen) => onChange({ maxlen } as Partial<WksItem>)} /></Row>
+        <Row label="Max height (mm)"><NumField value={t.maxheight} onChange={(maxheight) => onChange({ maxheight } as Partial<WksItem>)} /></Row>
       </div>
     );
   }
@@ -670,6 +760,7 @@ function ItemProperties({ item, onChange }: { item: WksItem; onChange: (patch: P
         {base}
         <PointFields label="Position" point={b.pos} onChange={(pos) => onChange({ pos } as Partial<WksItem>)} />
         <Row label="Scale"><NumField value={b.scale} onChange={(scale) => onChange({ scale } as Partial<WksItem>)} /></Row>
+        <Row label="PPI"><NumField step={1} value={b.ppi} onChange={(ppi) => onChange({ ppi: Math.max(1, Math.round(ppi)) } as Partial<WksItem>)} /></Row>
       </div>
     );
   }
@@ -729,6 +820,103 @@ function PageSettingsDialog({ paper, portrait, onOk, onCancel }: {
         <div className="ze-modal-footer">
           <button className="ze-btn" onClick={onCancel}>Cancel</button>
           <button className="ze-btn primary" onClick={() => onOk(p, port)}>OK</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Page-preview settings (pl_editor properties-frame "Page 1 / Other pages" +
+ * title-block display mode): choose which page to preview and whether the title
+ * block shows resolved sample values or its raw `${…}` field templates.
+ */
+function PreviewSettingsDialog({ pageNumber, titleMode, onPageNumber, onTitleMode, onClose }: {
+  pageNumber: number; titleMode: 'preview' | 'edit';
+  onPageNumber: (n: number) => void; onTitleMode: (m: 'preview' | 'edit') => void; onClose: () => void;
+}): JSX.Element {
+  return (
+    <div className="ze-modal-backdrop" onMouseDown={onClose}>
+      <div className="ze-modal ze-label-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="ze-modal-header">Page Preview Settings<span className="x" onClick={onClose}>✕</span></div>
+        <div className="ze-label-dialog-body">
+          <div className="row">
+            <span>Preview page</span>
+            <select className="ze-select" value={pageNumber} onChange={(e) => onPageNumber(Number(e.target.value))} autoFocus>
+              <option value={1}>Page 1</option>
+              <option value={2}>Other pages</option>
+            </select>
+          </div>
+          <div className="row">
+            <span>Title block</span>
+            <select className="ze-select" value={titleMode} onChange={(e) => onTitleMode(e.target.value as 'preview' | 'edit')}>
+              <option value="preview">Show in preview mode</option>
+              <option value="edit">Show in edit mode</option>
+            </select>
+          </div>
+        </div>
+        <div className="ze-modal-footer">
+          <button className="ze-btn primary" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A one-line geometry/content summary of a drawing-sheet item for the inspector. */
+function itemSummary(it: WksItem): string {
+  switch (it.type) {
+    case 'text': return `"${it.text}" @ (${it.pos.x}, ${it.pos.y}) ${it.pos.corner}`;
+    case 'line':
+    case 'rect': return `(${it.start.x}, ${it.start.y}) ${it.start.corner} → (${it.end.x}, ${it.end.y}) ${it.end.corner}`;
+    case 'bitmap': return `@ (${it.pos.x}, ${it.pos.y}) ${it.pos.corner}, scale ${it.scale}${it.pxW ? `, ${it.pxW}×${it.pxH}px` : ''}`;
+    case 'polygon': return `@ (${it.pos.x}, ${it.pos.y}) ${it.pos.corner}, ${it.contours.length} contour(s)`;
+  }
+}
+
+/**
+ * Design Inspector (pl_editor "Show Design Inspector"): a table of every item in
+ * the DS_DATA_MODEL with its type, name, page option, repeat and geometry. Rows
+ * are clickable to select + zoom the item on the canvas.
+ */
+function DesignInspector({ items, selection, onSelect, onClose }: {
+  items: WksItem[]; selection: ReadonlySet<number>;
+  onSelect: (index: number) => void; onClose: () => void;
+}): JSX.Element {
+  const SHOW: Record<WksOption, string> = { normal: 'All pages', page1only: 'Page 1 only', notonpage1: 'Not page 1' };
+  return (
+    <div className="ze-modal-backdrop" onMouseDown={onClose}>
+      <div className="ze-modal" style={{ width: 760, maxWidth: '92vw' }} onMouseDown={(e) => e.stopPropagation()}>
+        <div className="ze-modal-header">Design Inspector — {items.length} item{items.length === 1 ? '' : 's'}<span className="x" onClick={onClose}>✕</span></div>
+        <div style={{ maxHeight: '60vh', overflow: 'auto' }} data-testid="ds-inspector">
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ position: 'sticky', top: 0, background: 'var(--panel, #2b2b30)', textAlign: 'left' }}>
+                {['#', 'Type', 'Name', 'Show on', 'Repeat', 'Geometry'].map((h) => (
+                  <th key={h} style={{ padding: '5px 8px', borderBottom: '1px solid rgba(128,128,128,0.35)' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it, i) => (
+                <tr key={i}
+                  className={selection.has(i) ? 'active' : ''}
+                  style={{ cursor: 'pointer', background: selection.has(i) ? 'rgba(74,163,255,0.18)' : undefined }}
+                  onClick={() => { onSelect(i); onClose(); }}>
+                  <td style={{ padding: '4px 8px' }}>{i + 1}</td>
+                  <td style={{ padding: '4px 8px' }}>{TYPE_LABEL[it.type]}</td>
+                  <td style={{ padding: '4px 8px' }}>{it.name || <span className="ze-muted">—</span>}</td>
+                  <td style={{ padding: '4px 8px' }}>{SHOW[it.option]}</td>
+                  <td style={{ padding: '4px 8px' }}>{it.repeat}</td>
+                  <td style={{ padding: '4px 8px', whiteSpace: 'nowrap', maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }}>{itemSummary(it)}</td>
+                </tr>
+              ))}
+              {items.length === 0 && <tr><td colSpan={6} className="ze-muted" style={{ padding: 10 }}>No items.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div className="ze-modal-footer">
+          <button className="ze-btn primary" onClick={onClose}>Close</button>
         </div>
       </div>
     </div>

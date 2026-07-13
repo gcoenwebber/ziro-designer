@@ -71,6 +71,7 @@ const BITMAP: Record<string, string> = {
   // drawing sheet editor (icons per PL_EDITOR_FRAME actions, toolbars_pl_editor.cpp)
   dsAddLine: 'add_graphical_segments', dsAddRect: 'add_rectangle', dsAddText: 'text',
   dsAddBitmap: 'image', dsAppend: 'import', dsDelete: 'delete_cursor', appendSheet: 'import',
+  inspect: 'spreadsheet',
 };
 
 /** KiCad icon URL for a toolbar tool id, or undefined if none is mapped. */
