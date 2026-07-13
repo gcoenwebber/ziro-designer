@@ -23,7 +23,7 @@
  * (KiCad selects the FOOTPRINT, not its pad, unless you alt/nested-select).
  */
 
-import { atom, isList, head, type SList, type SNode } from '../sexpr/index.js';
+import { atom, str, isList, head, type SList, type SNode } from '../sexpr/index.js';
 import { iuToMM } from '../units.js';
 import { arcCenter, rotatePcb } from './read-board.js';
 import { footprintBBox } from './edit-footprint.js';
@@ -597,4 +597,49 @@ export function rotateBoardItems(board: Board, ids: ReadonlySet<string>, ccw: bo
     shapes: board.shapes.map((s, i) => (idx.shape.has(i) ? rotShape(s) : s)),
     footprints: board.footprints.map((f, i) => (idx.footprint.has(i) ? rotFootprint(f) : f)),
   };
+}
+
+// ----- duplicate (EDIT_TOOL::Duplicate) ---------------------------------------
+
+const genUuid = (): string =>
+  globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+/** Deep-clone a board item and give it a fresh uuid (model + source). */
+function cloneItem<T extends { uuid?: string; source: SList }>(item: T): T {
+  const c = structuredClone(item);
+  const uuid = genUuid();
+  c.uuid = uuid;
+  c.source = patchChild(c.source, 'uuid', list(atom('uuid'), str(uuid)));
+  return c;
+}
+
+/**
+ * Duplicate the selected items (EDIT_TOOL::Duplicate). Each clone is a deep copy
+ * with a fresh uuid, appended to its array, then offset by `delta` so it doesn't
+ * sit exactly on the original. Returns the new board plus the ids of the copies
+ * (so the caller can select them / attach them to the cursor). Zones aren't
+ * duplicated yet (see moveBoardItems).
+ */
+export function duplicateBoardItems(board: Board, ids: ReadonlySet<string>, delta: Vec2): { board: Board; ids: string[] } {
+  if (ids.size === 0) return { board, ids: [] };
+  const idx = indicesByKind(ids);
+  const tracks = [...board.tracks], arcs = [...board.arcs], vias = [...board.vias];
+  const footprints = [...board.footprints], shapes = [...board.shapes], texts = [...board.texts];
+  const newIds: string[] = [];
+  const dup = <T extends { uuid?: string; source: SList }>(arr: T[], src: T[], sel: Set<number>, kind: BoardItemKind): void => {
+    for (const i of [...sel].sort((a, b) => a - b)) {
+      const orig = src[i];
+      if (!orig) continue;
+      newIds.push(boardItemId(kind, arr.length));
+      arr.push(cloneItem(orig));
+    }
+  };
+  dup(tracks, board.tracks, idx.track, 'track');
+  dup(arcs, board.arcs, idx.arc, 'arc');
+  dup(vias, board.vias, idx.via, 'via');
+  dup(footprints, board.footprints, idx.footprint, 'footprint');
+  dup(shapes, board.shapes, idx.shape, 'shape');
+  dup(texts, board.texts, idx.text, 'text');
+  const copied: Board = { ...board, tracks, arcs, vias, footprints, shapes, texts };
+  return { board: moveBoardItems(copied, new Set(newIds), delta), ids: newIds };
 }

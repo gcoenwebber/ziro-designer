@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   boardItemId, parseBoardItemId, boardItemBBox,
-  hitTestBoard, boardHitCandidates, boardItemsInBox, moveBoardItems, deleteBoardItems, rotateBoardItems,
+  hitTestBoard, boardHitCandidates, boardItemsInBox,
+  moveBoardItems, deleteBoardItems, rotateBoardItems, duplicateBoardItems,
 } from '../src/pcb/edit-board.js';
 import { parse } from '../src/sexpr/index.js';
 import { readBoard } from '../src/pcb/read-board.js';
@@ -298,5 +299,67 @@ describe('rotateBoardItems', () => {
     // start (10,10) about (20,10): rel (-10,0) -> (0,10) -> (20,20) mm.
     expect(reread.tracks[0]!.start).toEqual({ x: mmToIU(20), y: mmToIU(20) });
     expect(reread.tracks[0]!.net).toBe(1);
+  });
+});
+
+describe('duplicateBoardItems', () => {
+  it('appends offset copies and returns their ids', () => {
+    const b = board({ tracks: [track({ x: 0, y: 0 }, { x: 100, y: 0 })] });
+    const { board: out, ids } = duplicateBoardItems(b, new Set(['track:0']), { x: 10, y: 20 });
+    expect(out.tracks).toHaveLength(2);
+    expect(ids).toEqual(['track:1']);
+    expect(out.tracks[0]!.start).toEqual({ x: 0, y: 0 });   // original untouched
+    expect(out.tracks[1]!.start).toEqual({ x: 10, y: 20 });  // copy offset
+  });
+
+  it('gives the copy a fresh uuid', () => {
+    const t = track({ x: 0, y: 0 }, { x: 1, y: 0 });
+    t.uuid = 'aaaa';
+    const b = board({ tracks: [t] });
+    const { board: out } = duplicateBoardItems(b, new Set(['track:0']), { x: 5, y: 0 });
+    expect(out.tracks[1]!.uuid).toBeDefined();
+    expect(out.tracks[1]!.uuid).not.toBe('aaaa');
+  });
+
+  it('the appended copy serializes (writer append pass) and re-reads', () => {
+    const TEXT = `(kicad_pcb (version 20241229) (generator "pcbnew")
+	(layers (0 "F.Cu" signal))
+	(net 0 "") (net 1 "GND")
+	(segment (start 10 10) (end 30 10) (width 0.25) (layer "F.Cu") (net 1))
+)
+`;
+    const b = readBoard(parse(TEXT));
+    const { board: out } = duplicateBoardItems(b, new Set(['track:0']), { x: mmToIU(0), y: mmToIU(5) });
+    const reread = readBoard(parse(serializeBoard(out)));
+    expect(reread.tracks).toHaveLength(2);
+    expect(reread.tracks[1]!.start).toEqual({ x: mmToIU(10), y: mmToIU(15) });
+    expect(reread.tracks[1]!.net).toBe(1);
+  });
+});
+
+describe('canonical builders (source-less items append + re-read)', () => {
+  it('serializes a board with freshly-built (source-less) items', () => {
+    const TEXT = `(kicad_pcb (version 20241229) (generator "pcbnew")
+	(layers (0 "F.Cu" signal) (2 "B.Cu" signal) (25 "Edge.Cuts" user) (5 "F.SilkS" user))
+	(net 0 "") (net 1 "GND")
+)
+`;
+    const b = readBoard(parse(TEXT));
+    // Push items with EMPTY source — the writer must build them canonically.
+    const withNew: Board = {
+      ...b,
+      tracks: [track({ x: mmToIU(0), y: mmToIU(0) }, { x: mmToIU(10), y: mmToIU(0) }, mmToIU(0.25))],
+      vias: [via({ x: mmToIU(10), y: mmToIU(0) }, mmToIU(0.8))],
+      shapes: [lineShape({ x: mmToIU(0), y: mmToIU(0) }, { x: mmToIU(20), y: mmToIU(0) }, mmToIU(0.15))],
+      texts: [text({ x: mmToIU(5), y: mmToIU(5) }, 'HI', mmToIU(1))],
+    };
+    const reread = readBoard(parse(serializeBoard(withNew)));
+    expect(reread.tracks).toHaveLength(1);
+    expect(reread.tracks[0]!.start.x).toBe(mmToIU(0));
+    expect(reread.vias).toHaveLength(1);
+    expect(reread.vias[0]!.at.x).toBe(mmToIU(10));
+    expect(reread.shapes).toHaveLength(1);
+    expect(reread.texts).toHaveLength(1);
+    expect(reread.texts[0]!.text).toBe('HI');
   });
 });

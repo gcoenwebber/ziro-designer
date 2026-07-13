@@ -140,7 +140,10 @@ export {
 export {
   boardItemId, parseBoardItemId, boardItemBBox,
   hitTestBoard, boardHitCandidates, boardItemsInBox,
-  moveBoardItems, deleteBoardItems, rotateBoardItems, boardSelectionBBox,
+  moveBoardItems, deleteBoardItems, rotateBoardItems, duplicateBoardItems, boardSelectionBBox,
   type BoardItemKind, type BoardItemRef, type BoardBBox,
 } from './pcb/edit-board.js';
-export { serializeBoard, writeBoardNode } from './pcb/write-board.js';
+export {
+  serializeBoard, writeBoardNode,
+  buildTrackNode, buildArcTrackNode, buildViaNode, buildBoardShapeNode, buildBoardTextNode,
+} from './pcb/write-board.js';

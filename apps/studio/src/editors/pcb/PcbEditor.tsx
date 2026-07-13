@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import {
   parse, readBoard, iuToMM, boardHitCandidates, boardItemsInBox, boardItemBBox, parseBoardItemId,
-  moveBoardItems, deleteBoardItems, rotateBoardItems, serializeBoard,
+  moveBoardItems, deleteBoardItems, rotateBoardItems, duplicateBoardItems, serializeBoard,
   type Board, type BoardItemKind,
 } from '@ziroeda/core';
 import { MenuBar, type Menu } from '../../ui/MenuBar.js';
@@ -405,6 +405,16 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
     commitBoard(rotateBoardItems(brd, sel, ccw));
   }, [commitBoard]);
 
+  // Duplicate the selection 1 mm off (EDIT_TOOL::Duplicate) and select the copies.
+  const duplicateSel = useCallback(() => {
+    const brd = boardRef.current;
+    const sel = selForDrawRef.current;
+    if (!brd || sel.size === 0) return;
+    const { board: next, ids } = duplicateBoardItems(brd, sel, { x: MM, y: MM });
+    commitBoard(next);
+    setSelection(new Set(ids));
+  }, [commitBoard]);
+
   const zoomToFit = useCallback(() => {
     const canvas = canvasRef.current;
     const scene = sceneRef.current;
@@ -644,6 +654,7 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
       const mod = e.ctrlKey || e.metaKey;
       if (mod && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
       if (mod && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
+      if (mod && (e.key === 'd' || e.key === 'D')) { e.preventDefault(); duplicateSel(); return; }
       if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); deleteSel(); return; }
       if (!mod && (e.key === 'r' || e.key === 'R')) { rotateSel(!e.shiftKey); return; } // R = CCW, Shift+R = CW
       if (!mod && (e.key === 'f' || e.key === 'F')) zoomToFit();
@@ -655,7 +666,7 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [zoomToFit, undo, redo, deleteSel, rotateSel]);
+  }, [zoomToFit, undo, redo, deleteSel, rotateSel, duplicateSel]);
 
   const [viewer3dReady, setViewer3dReady] = useState(false);
   // Mount the three.js 3D viewer while the overlay is open. Lazy-imported so
@@ -786,6 +797,7 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
         { label: 'Undo', action: undo, shortcut: 'Ctrl+Z' },
         { label: 'Redo', action: redo, shortcut: 'Ctrl+Y' },
         { sep: true },
+        { label: 'Duplicate', action: duplicateSel, shortcut: 'Ctrl+D' },
         { label: 'Delete', action: deleteSel, shortcut: 'Del' },
         { sep: true },
         { label: 'Find', disabled: dis, shortcut: 'Ctrl+F' },
