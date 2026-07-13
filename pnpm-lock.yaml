@@ -130,6 +130,9 @@ importers:
       '@ziroeda/core':
         specifier: workspace:*
         version: link:../libs/core
+      '@ziroeda/designer':
+        specifier: workspace:*
+        version: link:../designer
       '@ziroeda/eeschema':
         specifier: workspace:*
         version: link:../eeschema
