@@ -13,6 +13,7 @@
   "dependencies": {
     "@ziroeda/common": "workspace:*",
     "@ziroeda/core": "workspace:*",
+    "@ziroeda/designer": "workspace:*",
     "@ziroeda/eeschema": "workspace:*",
     "@ziroeda/kimath": "workspace:*",
     "@ziroeda/pcbnew": "workspace:*",

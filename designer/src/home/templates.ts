@@ -8,7 +8,7 @@
  * like PROJECT_TEMPLATE::CreateProject — except drawing sheets and libraries,
  * which stay put so their references don't break.
  */
-import type { PickedHomeFile } from './HomePage.js';
+import type { PickedHomeFile } from './files.js';
 
 export interface TemplateMeta {
   id: string;
