@@ -43,6 +43,11 @@ export interface WksResolveContext {
   sheetName?: string;
   sheetPath?: string;
   appVersion?: string;
+  /**
+   * When true, leave `${…}` tokens unresolved (pl_editor's "Show title block in
+   * edit mode", where the raw field templates are shown instead of sample data).
+   */
+  rawText?: boolean;
 }
 
 export interface DsLineItem {
@@ -199,7 +204,7 @@ export function layoutDrawingSheet(
           const label = i === 0 ? it.text : incrementLabel(it.text, it.incrlabel * i);
           out.push({
             kind: 'text',
-            text: resolveDrawingSheetText(label, ctx),
+            text: ctx.rawText ? label : resolveDrawingSheetText(label, ctx),
             at: resolvePoint(it.pos, m, dx, dy),
             w: mmToIU(it.fontW > 0 ? it.fontW : s.textW),
             h: mmToIU(it.fontH > 0 ? it.fontH : s.textH),
