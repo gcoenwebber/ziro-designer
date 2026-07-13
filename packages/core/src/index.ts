@@ -139,7 +139,8 @@ export {
 } from './pcb/edit-footprint.js';
 export {
   boardItemId, parseBoardItemId, boardItemBBox,
-  hitTestBoard, boardHitCandidates, boardItemsInBox, moveBoardItems, deleteBoardItems,
+  hitTestBoard, boardHitCandidates, boardItemsInBox,
+  moveBoardItems, deleteBoardItems, rotateBoardItems, boardSelectionBBox,
   type BoardItemKind, type BoardItemRef, type BoardBBox,
 } from './pcb/edit-board.js';
 export { serializeBoard, writeBoardNode } from './pcb/write-board.js';

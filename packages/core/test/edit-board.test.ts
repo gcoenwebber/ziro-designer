@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   boardItemId, parseBoardItemId, boardItemBBox,
-  hitTestBoard, boardHitCandidates, boardItemsInBox, moveBoardItems, deleteBoardItems,
+  hitTestBoard, boardHitCandidates, boardItemsInBox, moveBoardItems, deleteBoardItems, rotateBoardItems,
 } from '../src/pcb/edit-board.js';
 import { parse } from '../src/sexpr/index.js';
 import { readBoard } from '../src/pcb/read-board.js';
@@ -257,5 +257,46 @@ describe('deleteBoardItems', () => {
     const out = deleteBoardItems(b, new Set(['track:1'])); // the net-2 track
     const reread = readBoard(parse(serializeBoard(out)));
     expect(reread.tracks.map((t) => t.net)).toEqual([1, 3]);
+  });
+});
+
+describe('rotateBoardItems', () => {
+  it('rotates a track ±90° about an explicit centre', () => {
+    // rotatePcb(90): (x,y) -> (y, -x). About origin: (100,0)->(0,-100).
+    const b = board({ tracks: [track({ x: 100, y: 0 }, { x: 200, y: 0 }, 20)] });
+    const r = rotateBoardItems(b, new Set(['track:0']), true, { x: 0, y: 0 });
+    expect(r.tracks[0]!.start).toEqual({ x: 0, y: -100 });
+    expect(r.tracks[0]!.end).toEqual({ x: 0, y: -200 });
+  });
+
+  it('advances a footprint angle and rotates its children', () => {
+    const b = board({ footprints: [footprint([pad({ x: 100, y: 0 }, 400, 400)])] });
+    const r = rotateBoardItems(b, new Set(['footprint:0']), true, { x: 0, y: 0 });
+    expect(r.footprints[0]!.angle).toBe(90);
+    expect(r.footprints[0]!.at).toEqual({ x: 0, y: 0 });
+    expect(r.footprints[0]!.pads[0]!.at).toEqual({ x: 0, y: -100 });
+  });
+
+  it('four 90° rotations return to the original geometry', () => {
+    const b = board({ tracks: [track({ x: 300, y: 100 }, { x: 500, y: 400 }, 20)] });
+    let r = b;
+    for (let i = 0; i < 4; i++) r = rotateBoardItems(r, new Set(['track:0']), true, { x: 0, y: 0 });
+    expect(r.tracks[0]!.start).toEqual({ x: 300, y: 100 });
+    expect(r.tracks[0]!.end).toEqual({ x: 500, y: 400 });
+  });
+
+  it('patched source survives a serialize round-trip', () => {
+    const TEXT = `(kicad_pcb (version 20241229) (generator "pcbnew")
+	(layers (0 "F.Cu" signal))
+	(net 0 "") (net 1 "GND")
+	(segment (start 10 10) (end 30 10) (width 0.25) (layer "F.Cu") (net 1))
+)
+`;
+    const b = readBoard(parse(TEXT));
+    const rotated = rotateBoardItems(b, new Set(['track:0']), true, { x: mmToIU(20), y: mmToIU(10) });
+    const reread = readBoard(parse(serializeBoard(rotated)));
+    // start (10,10) about (20,10): rel (-10,0) -> (0,10) -> (20,20) mm.
+    expect(reread.tracks[0]!.start).toEqual({ x: mmToIU(20), y: mmToIU(20) });
+    expect(reread.tracks[0]!.net).toBe(1);
   });
 });

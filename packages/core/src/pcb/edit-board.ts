@@ -25,7 +25,7 @@
 
 import { atom, isList, head, type SList, type SNode } from '../sexpr/index.js';
 import { iuToMM } from '../units.js';
-import { arcCenter } from './read-board.js';
+import { arcCenter, rotatePcb } from './read-board.js';
 import { footprintBBox } from './edit-footprint.js';
 import type { Board, PcbFootprint, PcbTrack, PcbArcTrack, PcbVia, PcbShape, PcbTextItem, PcbZone } from './types.js';
 import type { Vec2 } from '../model/types.js';
@@ -500,5 +500,101 @@ export function deleteBoardItems(board: Board, ids: ReadonlySet<string>): Board 
     shapes: board.shapes.filter((_, i) => !idx.shape.has(i)),
     texts: board.texts.filter((_, i) => !idx.text.has(i)),
     footprints: board.footprints.filter((_, i) => !idx.footprint.has(i)),
+  };
+}
+
+// ----- rotate (EDIT_TOOL::Rotate) ---------------------------------------------
+
+/** Normalise degrees to [0, 360). */
+const norm360 = (a: number): number => ((a % 360) + 360) % 360;
+/** Rotate a point about a centre by `deg` (KiCad RotatePoint convention). */
+const rotAbout = (p: Vec2, c: Vec2, deg: number): Vec2 => {
+  const r = rotatePcb({ x: p.x - c.x, y: p.y - c.y }, deg);
+  return { x: r.x + c.x, y: r.y + c.y };
+};
+
+/** Combined bounding box of the selected items, or null when empty. */
+export function boardSelectionBBox(board: Board, ids: ReadonlySet<string>): BoardBBox | null {
+  const b = emptyBox();
+  for (const id of ids) {
+    const ib = boardItemBBox(board, id);
+    if (ib && !isEmpty(ib)) { growBox(b, { x: ib.minX, y: ib.minY }); growBox(b, { x: ib.maxX, y: ib.maxY }); }
+  }
+  return isEmpty(b) ? null : b;
+}
+
+const rotShapeCoords = <T extends { center?: Vec2; start?: Vec2; end?: Vec2; mid?: Vec2; pts?: Vec2[] }>(s: T, c: Vec2, deg: number): Partial<T> => {
+  const n: { center?: Vec2; start?: Vec2; end?: Vec2; mid?: Vec2; pts?: Vec2[] } = {};
+  if (s.center) n.center = rotAbout(s.center, c, deg);
+  if (s.start) n.start = rotAbout(s.start, c, deg);
+  if (s.end) n.end = rotAbout(s.end, c, deg);
+  if (s.mid) n.mid = rotAbout(s.mid, c, deg);
+  if (s.pts) n.pts = s.pts.map((p) => rotAbout(p, c, deg));
+  return n as Partial<T>;
+};
+
+/**
+ * Rotate the selected items by ±90° about a centre (EDIT_TOOL::Rotate).
+ * `ccw` picks the direction; `center` defaults to the selection's bounding-box
+ * centre (KiCad rotates about the selection centre / rotation point). Footprints
+ * rotate by patching their `(at … angle)` anchor (children stay local, so the
+ * writer re-bakes them); their model-absolute child coords rotate too.
+ */
+export function rotateBoardItems(board: Board, ids: ReadonlySet<string>, ccw: boolean, center?: Vec2): Board {
+  if (ids.size === 0) return board;
+  const c = center ?? (() => { const b = boardSelectionBBox(board, ids); return b ? { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 } : { x: 0, y: 0 }; })();
+  const deg = ccw ? 90 : -90;
+  const idx = indicesByKind(ids);
+
+  const rotTrack = (t: PcbTrack): PcbTrack => {
+    const start = rotAbout(t.start, c, deg), end = rotAbout(t.end, c, deg);
+    let src = patchChild(t.source, 'start', xyNode('start', start));
+    src = patchChild(src, 'end', xyNode('end', end));
+    return { ...t, start, end, source: src };
+  };
+  const rotArc = (a: PcbArcTrack): PcbArcTrack => {
+    const start = rotAbout(a.start, c, deg), mid = rotAbout(a.mid, c, deg), end = rotAbout(a.end, c, deg);
+    let src = patchChild(a.source, 'start', xyNode('start', start));
+    src = patchChild(src, 'mid', xyNode('mid', mid));
+    src = patchChild(src, 'end', xyNode('end', end));
+    return { ...a, start, mid, end, source: src };
+  };
+  const rotVia = (v: PcbVia): PcbVia => {
+    const at = rotAbout(v.at, c, deg);
+    return { ...v, at, source: patchChild(v.source, 'at', atNode(at)) };
+  };
+  const rotText = (t: PcbTextItem): PcbTextItem => {
+    const at = rotAbout(t.at, c, deg), angle = norm360(t.angle + deg);
+    return { ...t, at, angle, source: patchChild(t.source, 'at', atNode(at, angle)) };
+  };
+  const rotShape = (s: PcbShape): PcbShape => {
+    const next = { ...s, ...rotShapeCoords(s, c, deg) };
+    let src = s.source;
+    if (next.center) src = patchChild(src, 'center', xyNode('center', next.center));
+    if (next.start) src = patchChild(src, 'start', xyNode('start', next.start));
+    if (next.end) src = patchChild(src, 'end', xyNode('end', next.end));
+    if (next.mid) src = patchChild(src, 'mid', xyNode('mid', next.mid));
+    if (next.pts) src = patchChild(src, 'pts', ptsNode(next.pts));
+    return { ...next, source: src };
+  };
+  const rotFootprint = (f: PcbFootprint): PcbFootprint => {
+    const at = rotAbout(f.at, c, deg), angle = norm360(f.angle + deg);
+    return {
+      ...f, at, angle,
+      pads: f.pads.map((p) => ({ ...p, at: rotAbout(p.at, c, deg), angle: norm360(p.angle + deg) })),
+      texts: f.texts.map((t) => ({ ...t, at: rotAbout(t.at, c, deg), angle: norm360(t.angle + deg) })),
+      shapes: f.shapes.map((s) => ({ ...s, ...rotShapeCoords(s, c, deg) })),
+      source: patchChild(f.source, 'at', atNode(at, angle)),
+    };
+  };
+
+  return {
+    ...board,
+    tracks: board.tracks.map((t, i) => (idx.track.has(i) ? rotTrack(t) : t)),
+    arcs: board.arcs.map((a, i) => (idx.arc.has(i) ? rotArc(a) : a)),
+    vias: board.vias.map((v, i) => (idx.via.has(i) ? rotVia(v) : v)),
+    texts: board.texts.map((t, i) => (idx.text.has(i) ? rotText(t) : t)),
+    shapes: board.shapes.map((s, i) => (idx.shape.has(i) ? rotShape(s) : s)),
+    footprints: board.footprints.map((f, i) => (idx.footprint.has(i) ? rotFootprint(f) : f)),
   };
 }

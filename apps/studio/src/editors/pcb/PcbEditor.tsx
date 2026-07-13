@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import {
   parse, readBoard, iuToMM, boardHitCandidates, boardItemsInBox, boardItemBBox, parseBoardItemId,
-  moveBoardItems, deleteBoardItems, serializeBoard,
+  moveBoardItems, deleteBoardItems, rotateBoardItems, serializeBoard,
   type Board, type BoardItemKind,
 } from '@ziroeda/core';
 import { MenuBar, type Menu } from '../../ui/MenuBar.js';
@@ -396,6 +396,15 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
     setSelection(new Set());
   }, [commitBoard]);
 
+  // Rotate the selection ±90° about its centre (EDIT_TOOL::Rotate). Keeps the
+  // selection so it can be rotated repeatedly.
+  const rotateSel = useCallback((ccw: boolean) => {
+    const brd = boardRef.current;
+    const sel = selForDrawRef.current;
+    if (!brd || sel.size === 0) return;
+    commitBoard(rotateBoardItems(brd, sel, ccw));
+  }, [commitBoard]);
+
   const zoomToFit = useCallback(() => {
     const canvas = canvasRef.current;
     const scene = sceneRef.current;
@@ -636,6 +645,7 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
       if (mod && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
       if (mod && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
       if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); deleteSel(); return; }
+      if (!mod && (e.key === 'r' || e.key === 'R')) { rotateSel(!e.shiftKey); return; } // R = CCW, Shift+R = CW
       if (!mod && (e.key === 'f' || e.key === 'F')) zoomToFit();
       if (e.key === 'Escape') {
         // Escape first dismisses the disambiguation menu, then clears selection.
@@ -645,7 +655,7 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [zoomToFit, undo, redo, deleteSel]);
+  }, [zoomToFit, undo, redo, deleteSel, rotateSel]);
 
   const [viewer3dReady, setViewer3dReady] = useState(false);
   // Mount the three.js 3D viewer while the overlay is open. Lazy-imported so
@@ -738,6 +748,8 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
       case 'save': saveCopy(); break;
       case 'undo': undo(); break;
       case 'redo': redo(); break;
+      case 'rotateCCW': rotateSel(true); break;
+      case 'rotateCW': rotateSel(false); break;
       case 'zoomRedraw': cacheRef.current = null; requestDraw(); break;
       case 'zoomIn': zoomStep(1.3); break;
       case 'zoomOut': zoomStep(1 / 1.3); break;
