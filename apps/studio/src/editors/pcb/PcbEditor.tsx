@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import {
   parse, readBoard, iuToMM, boardHitCandidates, boardItemsInBox, boardItemBBox, parseBoardItemId,
+  moveBoardItems, serializeBoard,
   type Board, type BoardItemKind,
 } from '@ziroeda/core';
 import { MenuBar, type Menu } from '../../ui/MenuBar.js';
@@ -129,6 +130,13 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
   selForDrawRef.current = selection;
   // The in-progress rubber-band marquee (world coords), read by the overlay pass.
   const boxRef = useRef<{ a: { x: number; y: number }; b: { x: number; y: number } } | null>(null);
+  // Live drag-move offset (world units) applied to the selection highlight while
+  // a move gesture is in flight; committed on pointer-up (PCB_MOVE_TOOL preview).
+  const moveDeltaRef = useRef<{ x: number; y: number } | null>(null);
+  const movingRef = useRef(false);
+  // Whole-board snapshot undo/redo (EDIT_TOOL's SaveCopyInUndoList).
+  const undoRef = useRef<Board[]>([]);
+  const redoRef = useRef<Board[]>([]);
   // Item the disambiguation menu is hovering — brightened in the overlay pass.
   const hoverRef = useRef<string | null>(null);
   // Mirror of `disambig` open-state for the global Escape handler (no re-subscribe).
@@ -276,14 +284,16 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
     const brd = boardRef.current;
     if (brd && sel.size > 0) {
       const toPx = (p: { x: number; y: number }): { x: number; y: number } => ({ x: p.x * v.scale + v.tx, y: p.y * v.scale + v.ty });
+      const md = moveDeltaRef.current;
+      const ox = md ? md.x : 0, oy = md ? md.y : 0;
       ctx.strokeStyle = 'rgba(255,255,255,0.95)';
       ctx.lineWidth = Math.max(1, dpr);
       ctx.setLineDash([4 * dpr, 3 * dpr]);
       for (const id of sel) {
         const b = boardItemBBox(brd, id);
         if (!b) continue;
-        const p0 = toPx({ x: b.minX, y: b.minY });
-        const p1 = toPx({ x: b.maxX, y: b.maxY });
+        const p0 = toPx({ x: b.minX + ox, y: b.minY + oy });
+        const p1 = toPx({ x: b.maxX + ox, y: b.maxY + oy });
         const pad = 2 * dpr;
         ctx.strokeRect(Math.min(p0.x, p1.x) - pad, Math.min(p0.y, p1.y) - pad,
           Math.abs(p1.x - p0.x) + 2 * pad, Math.abs(p1.y - p0.y) + 2 * pad);
@@ -336,6 +346,45 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
 
   // The selection / disambiguation hover live only in the overlay — just repaint.
   useEffect(() => { requestDraw(); }, [selection, disambig, requestDraw]);
+
+  // ----- board model mutation (edits + undo/redo) -----------------------------
+
+  // Recompile the render scene for a new board and repaint (edits change geometry).
+  const rebuildScene = useCallback((b: Board) => {
+    sceneRef.current = buildScene(b, { hideFrontFootprints: !objects.footprintsFront, hideBackFootprints: !objects.footprintsBack });
+    cacheRef.current = null;
+    requestDraw();
+  }, [objects.footprintsFront, objects.footprintsBack, requestDraw]);
+
+  const setBoardModel = useCallback((b: Board) => {
+    boardRef.current = b;
+    setBoard(b);
+    rebuildScene(b);
+  }, [rebuildScene]);
+
+  // Commit an edit: snapshot the current board for undo, then swap in the next.
+  const commitBoard = useCallback((next: Board) => {
+    const prev = boardRef.current;
+    if (prev) undoRef.current.push(prev);
+    redoRef.current = [];
+    setBoardModel(next);
+  }, [setBoardModel]);
+
+  const undo = useCallback(() => {
+    const prev = undoRef.current.pop();
+    if (!prev || !boardRef.current) return;
+    redoRef.current.push(boardRef.current);
+    setBoardModel(prev);
+    setSelection(new Set());
+  }, [setBoardModel]);
+
+  const redo = useCallback(() => {
+    const next = redoRef.current.pop();
+    if (!next || !boardRef.current) return;
+    undoRef.current.push(boardRef.current);
+    setBoardModel(next);
+    setSelection(new Set());
+  }, [setBoardModel]);
 
   const zoomToFit = useCallback(() => {
     const canvas = canvasRef.current;
@@ -434,9 +483,10 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
 
   // Middle-button pan (KiCad reserves the left button for select/move).
   const panRef = useRef<{ x: number; y: number } | null>(null);
-  // The left press in progress: origin, world origin, whether it began on an
-  // item, and whether it has moved (still = click; moved on empty = box-select).
-  const downRef = useRef<{ x: number; y: number; world: { x: number; y: number } | null; onItem: boolean; moved: boolean; shift: boolean } | null>(null);
+  // The left press in progress: origin, world origin, the item it landed on (if
+  // any), and whether it has moved. Still = click; moved on an item = drag-move;
+  // moved on empty = box-select.
+  const downRef = useRef<{ x: number; y: number; world: { x: number; y: number } | null; hitId: string | null; onItem: boolean; moved: boolean; shift: boolean } | null>(null);
 
   // Does an item of this kind pass the Selection Filter panel? (KiCad's
   // SELECTION_FILTER_OPTIONS — track/arc→Tracks, shape→Graphics, etc.)
@@ -495,8 +545,8 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
     if (e.button === 0) {
       const w = worldAt(e.clientX, e.clientY);
       const brd = boardRef.current;
-      const onItem = !!(w && brd && boardHitCandidates(brd, w, tolOf()).some(passesFilter));
-      downRef.current = { x: e.clientX, y: e.clientY, world: w, onItem, moved: false, shift: e.shiftKey };
+      const hitId = w && brd ? (boardHitCandidates(brd, w, tolOf()).filter(passesFilter)[0] ?? null) : null;
+      downRef.current = { x: e.clientX, y: e.clientY, world: w, hitId, onItem: !!hitId, moved: false, shift: e.shiftKey };
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
     }
   };
@@ -520,22 +570,42 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
     const d = downRef.current;
     if (d) {
       if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 3 * dpr) d.moved = true;
-      // Dragging from empty space rubber-bands a selection box.
-      if (d.moved && !d.onItem && d.world) {
+      if (d.moved && d.world) {
         const cur = worldAt(e.clientX, e.clientY);
-        if (cur) { boxRef.current = { a: d.world, b: cur }; requestDraw(); }
+        if (!cur) return;
+        if (d.onItem) {
+          // Drag on an item = move it (PCB_MOVE_TOOL). On the first move, make
+          // sure the grabbed item is selected so the whole selection follows.
+          if (!movingRef.current) {
+            movingRef.current = true;
+            if (d.hitId && !selForDrawRef.current.has(d.hitId)) applySelect(d.hitId, false);
+          }
+          moveDeltaRef.current = { x: cur.x - d.world.x, y: cur.y - d.world.y };
+          requestDraw();
+        } else {
+          // Drag from empty space rubber-bands a selection box.
+          boxRef.current = { a: d.world, b: cur };
+          requestDraw();
+        }
       }
     }
   };
   const onPointerUp = (e: React.PointerEvent): void => {
     const d = downRef.current;
     const box = boxRef.current;
+    const moved = movingRef.current;
+    const delta = moveDeltaRef.current;
     panRef.current = null;
     downRef.current = null;
     boxRef.current = null;
+    movingRef.current = false;
+    moveDeltaRef.current = null;
     if (d) {
       if (!d.moved) {
         clickSelect(e.clientX, e.clientY, d.shift);
+      } else if (moved && delta && boardRef.current && (delta.x !== 0 || delta.y !== 0)) {
+        // Commit the drag-move of the current selection (EDIT_TOOL::Move).
+        commitBoard(moveBoardItems(boardRef.current, selForDrawRef.current, delta));
       } else if (box && boardRef.current) {
         // Left→right = window (contained); right→left = crossing (touching).
         const contained = box.b.x >= box.a.x;
@@ -552,7 +622,10 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'f' || e.key === 'F') zoomToFit();
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+      if (mod && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
+      if (!mod && (e.key === 'f' || e.key === 'F')) zoomToFit();
       if (e.key === 'Escape') {
         // Escape first dismisses the disambiguation menu, then clears selection.
         if (disambigRef.current) { hoverRef.current = null; setDisambig(null); }
@@ -561,7 +634,7 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [zoomToFit]);
+  }, [zoomToFit, undo, redo]);
 
   const [viewer3dReady, setViewer3dReady] = useState(false);
   // Mount the three.js 3D viewer while the overlay is open. Lazy-imported so
@@ -638,7 +711,10 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
   };
 
   const saveCopy = useCallback((): void => {
-    const blob = new Blob([text], { type: 'text/plain' });
+    // Serialize the (possibly edited) board; fall back to the original text if
+    // it never parsed. serializeBoard is lossless for unedited boards.
+    const out = boardRef.current ? serializeBoard(boardRef.current) : text;
+    const blob = new Blob([out], { type: 'text/plain' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = fileName;
@@ -649,13 +725,15 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
   const onTopAction = (id: string): void => {
     switch (id) {
       case 'save': saveCopy(); break;
+      case 'undo': undo(); break;
+      case 'redo': redo(); break;
       case 'zoomRedraw': cacheRef.current = null; requestDraw(); break;
       case 'zoomIn': zoomStep(1.3); break;
       case 'zoomOut': zoomStep(1 / 1.3); break;
       case 'zoomFit': case 'zoomFitObjects': zoomToFit(); break;
       case 'showEeschema': onShowSchematic?.(); break;
       case 'threeDViewer': setShow3D(true); break;
-      default: break; // editing actions are staged
+      default: break; // other editing actions are staged
     }
   };
 
@@ -682,8 +760,8 @@ export function PcbEditor({ fileName, text, onExit, onShowSchematic, projectName
     {
       label: 'Edit',
       items: [
-        { label: 'Undo', disabled: dis, shortcut: 'Ctrl+Z' },
-        { label: 'Redo', disabled: dis, shortcut: 'Ctrl+Y' },
+        { label: 'Undo', action: undo, shortcut: 'Ctrl+Z' },
+        { label: 'Redo', action: redo, shortcut: 'Ctrl+Y' },
         { sep: true },
         { label: 'Find', disabled: dis, shortcut: 'Ctrl+F' },
         { sep: true },
