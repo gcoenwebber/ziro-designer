@@ -1,8 +1,19 @@
 # ZiroEDA
 
-A browser-native, open-source electronics design suite — a faithful, web-native
-reimplementation of the [KiCad](https://www.kicad.org/) workflow that runs in the
-browser and reads/writes KiCad's native file formats.
+**KiCad in the browser — same UI, same shortcuts, same files. Zero learning
+curve, zero installs.**
+
+ZiroEDA is a browser-native, open-source electronics design suite: a faithful,
+web-native reimplementation of the [KiCad](https://www.kicad.org/) workflow that
+looks and behaves exactly like KiCad and reads/writes KiCad's native file
+formats directly. No migration, no retraining — the world's largest open-source
+EDA community can just open a tab.
+
+The core is free software (GPL, like KiCad itself). The plan is to charge only
+for what a hosted service uniquely adds on top — cloud compute (simulation,
+autorouting, batch DRC), real-time team collaboration, and AI assistance —
+never for the editor itself. See **[PHILOSOPHY.md](./PHILOSOPHY.md)** for our
+compatibility promise and how we relate to the KiCad project and community.
 
 > ZiroEDA is an independent project. It is **not** affiliated with or endorsed by
 > the KiCad project, and "KiCad" is a trademark of its respective owners.
