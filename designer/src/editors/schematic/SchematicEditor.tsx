@@ -50,7 +50,7 @@ import { SymbolPropertiesDialog } from './components/SymbolPropertiesDialog.js';
 import { ErcDialog } from './components/ErcDialog.js';
 import { SymbolChooser } from './components/SymbolChooser.js';
 import { Toolbar } from '../../ui/Toolbar.js';
-import { TOP_TOOLBAR, LEFT_TOOLBAR, RIGHT_TOOLBAR } from '../../ui/toolbars.js';
+import { TOP_TOOLBAR, LEFT_TOOLBAR, RIGHT_TOOLBAR } from './toolbars_sch_editor.js';
 import { MenuBar } from '../../ui/MenuBar.js';
 import { buildMenus, TOOL_HOTKEYS } from './menubar.js';
 import { LoadingOverlay, nextPaint } from '../../ui/LoadingOverlay.js';
@@ -854,6 +854,7 @@ export function SchematicEditor({
       else if (id === 'showPcbNew') onShowPcb?.();
       else if (id === 'symbolEditor') onShowSymbolEditor?.();
       else if (id === 'openPreferences') setPrefsOpen(true);
+      else if (id === 'close') onExitToHome();
       // Menu Cut/Copy re-dispatch the native clipboard events our document
       // handlers already implement; Paste reads the async clipboard API (menu
       // clicks can't synthesize a trusted paste event).
@@ -881,7 +882,17 @@ export function SchematicEditor({
           return sel;
         });
     },
-    [undo, redo, save, promptOpen, runCommand, runErcNow, onShowPcb, onShowSymbolEditor],
+    [
+      undo,
+      redo,
+      save,
+      promptOpen,
+      runCommand,
+      runErcNow,
+      onShowPcb,
+      onShowSymbolEditor,
+      onExitToHome,
+    ],
   );
 
   const onLeftToggle = useCallback((id: string) => {

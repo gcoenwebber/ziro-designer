@@ -117,6 +117,15 @@ body {
   background: var(--chrome-hover);
   border-color: var(--chrome-border);
 }
+.ze-tbtn.disabled,
+.ze-tbtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.ze-tbtn.disabled:hover,
+.ze-tbtn:disabled:hover {
+  background: transparent;
+}
 .ze-tbtn.active {
   background: var(--chrome-active);
   border-color: var(--chrome-active-border);

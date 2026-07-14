@@ -78,12 +78,11 @@ export function buildMenus(h: MenuHandlers, checks: MenuChecks = {}): Menu[] {
   });
 
   return [
+    // File: the project-manager variant (Kiface().IsSingle() == false) — New/
+    // Open/Open Recent belong to the launcher, and the menu starts at Save.
     {
       label: 'File',
       items: [
-        stub('New...', 'Ctrl+N'),
-        act('Open...', 'open', 'open', 'Ctrl+O'),
-        SEP,
         act('Save', 'save', 'save', 'Ctrl+S'),
         stub('Save Current Sheet Copy As...'),
         stub('Revert'),
@@ -106,6 +105,9 @@ export function buildMenus(h: MenuHandlers, checks: MenuChecks = {}): Menu[] {
         stub('Page Settings...'),
         stub('Print...', 'Ctrl+P'),
         stub('Plot...'),
+        SEP,
+        // AddQuitOrClose: under the project manager the frame closes back to it.
+        act('Close', 'close', 'close', 'Ctrl+W'),
       ],
     },
     {
