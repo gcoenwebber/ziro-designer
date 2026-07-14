@@ -1,11 +1,23 @@
 /**
  * `.kicad_wks` reader: parse a drawing-sheet S-expression into a `WksSheet`.
  *
- * Mirrors KiCad's DRAWING_SHEET_READER_PARSER (common/drawing_sheet/
- * drawing_sheet_reader_keywords / ds_data_model_io.cpp). Item heads are
- * `line`, `rect`, `tbtext`, `polygon`, `bitmap`; a coordinate is
- * `(start|end|pos X Y [corner])` with the corner defaulting to `rbcorner`
- * exactly as KiCad's reader does when the anchor token is omitted.
+ * Mirrors KiCad's DRAWING_SHEET_PARSER (common/drawing_sheet/
+ * drawing_sheet_parser.cpp). Item heads are `line`, `rect`, `tbtext`,
+ * `polygon`, `bitmap`; a coordinate is `(start|end|pos X Y [corner])` with the
+ * corner defaulting to `rbcorner` exactly as the upstream reader does when the
+ * anchor token is omitted.
+ *
+ * Format notes (all from the upstream parser):
+ *  - text justification defaults to LEFT / CENTER; the `center` token inside
+ *    `(justify …)` sets BOTH axes to center, `left`/`right`/`top`/`bottom`
+ *    set one axis each;
+ *  - `(font …)` carries bare `bold` / `italic` atoms (not `(bold yes)` lists —
+ *    those are accepted leniently for older third-party writers), plus
+ *    `(face NAME)`, `(size W H)`, `(linewidth W)` and `(color R G B A)`;
+ *  - bitmap image data is base64 `(data "…" "…")` chunks directly under the
+ *    `bitmap` node (files ≥ 20230607), with the legacy hex
+ *    `(pngdata (data "…") …)` form still readable;
+ *  - `(repeat N)` is clamped to 1..100.
  */
 
 import { parse } from '@ziroeda/sexpr/src/parser.js';
@@ -19,6 +31,7 @@ import {
   type WksSetup,
   type WksPoint,
   type WksCorner,
+  type WksColor,
   type WksHJustify,
   type WksVJustify,
   type WksXY,
@@ -31,7 +44,7 @@ function readCorner(token: string | undefined): WksCorner {
   return token && CORNERS.has(token as WksCorner) ? (token as WksCorner) : 'rbcorner';
 }
 
-/** `(start X Y [corner])` → point; corner defaults to rbcorner (KiCad's default). */
+/** `(start X Y [corner])` → point; corner defaults to rbcorner (upstream default). */
 function readPoint(node: SList): WksPoint {
   const a = args(node);
   return { x: Number(a[0] ?? 0), y: Number(a[1] ?? 0), corner: readCorner(a[2]) };
@@ -61,10 +74,12 @@ function readBase(node: SList): {
 } {
   const name = childNamed(node, 'name');
   const comment = childNamed(node, 'comment');
+  // parseInt(1, 100): the repeat count is clamped, not rejected.
+  const repeat = Math.min(100, Math.max(1, Math.round(numChild(node, 'repeat', 1))));
   return {
     name: (name && arg(name, 0)) || '',
     option: readOption(node),
-    repeat: Math.max(1, numChild(node, 'repeat', 1)),
+    repeat,
     incrx: numChild(node, 'incrx', 0),
     incry: numChild(node, 'incry', 0),
     incrlabel: numChild(node, 'incrlabel', 1),
@@ -72,20 +87,56 @@ function readBase(node: SList): {
   };
 }
 
+/**
+ * `(justify …)` tokens. Defaults are LEFT / CENTER (DS_DATA_ITEM_TEXT ctor);
+ * `center` centers both axes, the other tokens set one axis each.
+ */
 function readJustify(node: SList): { h: WksHJustify; v: WksVJustify } {
+  let h: WksHJustify = 'left';
+  let v: WksVJustify = 'center';
   const j = childNamed(node, 'justify');
-  const tokens = j ? args(j) : [];
-  const h: WksHJustify = tokens.includes('left')
-    ? 'left'
-    : tokens.includes('right')
-      ? 'right'
-      : 'center';
-  const v: WksVJustify = tokens.includes('top')
-    ? 'top'
-    : tokens.includes('bottom')
-      ? 'bottom'
-      : 'center';
+  for (const token of j ? args(j) : []) {
+    if (token === 'center') {
+      h = 'center';
+      v = 'center';
+    } else if (token === 'left') h = 'left';
+    else if (token === 'right') h = 'right';
+    else if (token === 'top') v = 'top';
+    else if (token === 'bottom') v = 'bottom';
+  }
   return { h, v };
+}
+
+/** A bare atom child (`bold`) or a lenient `(bold yes)` list from older writers. */
+function fontFlag(font: SList, name: string): boolean {
+  for (const child of font.items.slice(1)) {
+    if (!isList(child)) {
+      if (child.kind === 'atom' && child.value === name) return true;
+    } else if (head(child) === name) {
+      return arg(child, 0) !== 'no';
+    }
+  }
+  return false;
+}
+
+const HEX_RE = /^[0-9a-fA-F\s]+$/;
+const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+/** Hex payload (legacy `pngdata`) → base64, so the model always stores base64. */
+function hexToBase64(hex: string): string {
+  const clean = hex.replace(/\s+/g, '');
+  const bytes: number[] = [];
+  for (let i = 0; i + 1 < clean.length; i += 2) bytes.push(parseInt(clean.slice(i, i + 2), 16));
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i]!;
+    const b1 = bytes[i + 1];
+    const b2 = bytes[i + 2];
+    out += B64_ALPHABET[b0 >> 2]! + B64_ALPHABET[((b0 & 3) << 4) | ((b1 ?? 0) >> 4)]!;
+    out += b1 === undefined ? '=' : B64_ALPHABET[((b1 & 15) << 2) | ((b2 ?? 0) >> 6)]!;
+    out += b2 === undefined ? '=' : B64_ALPHABET[b2 & 63]!;
+  }
+  return out;
 }
 
 function readItem(node: SList): WksItem | null {
@@ -111,13 +162,23 @@ function readItem(node: SList): WksItem | null {
     const pos = childNamed(node, 'pos');
     const font = childNamed(node, 'font');
     const size = font && childNamed(font, 'size');
-    const boldN = font && childNamed(font, 'bold');
-    const italN = font && childNamed(font, 'italic');
+    const faceN = font && childNamed(font, 'face');
+    const colorN = font && childNamed(font, 'color');
     const flw = font && childNamed(font, 'linewidth');
     const { h, v } = readJustify(node);
     const rot = childNamed(node, 'rotate');
     const maxlen = childNamed(node, 'maxlen');
     const maxheight = childNamed(node, 'maxheight');
+    let color: WksColor | undefined;
+    if (colorN) {
+      color = {
+        r: Math.min(255, Math.max(0, numArg(colorN, 0) ?? 0)),
+        g: Math.min(255, Math.max(0, numArg(colorN, 1) ?? 0)),
+        b: Math.min(255, Math.max(0, numArg(colorN, 2) ?? 0)),
+        a: Math.min(1, Math.max(0, numArg(colorN, 3) ?? 1)),
+      };
+    }
+    const face = faceN ? arg(faceN, 0) : undefined;
     return {
       type: 'text',
       ...base,
@@ -125,8 +186,10 @@ function readItem(node: SList): WksItem | null {
       pos: pos ? readPoint(pos) : { x: 0, y: 0, corner: 'rbcorner' },
       fontW: size ? (numArg(size, 0) ?? 0) : 0,
       fontH: size ? (numArg(size, 1) ?? 0) : 0,
-      bold: !!boldN && arg(boldN, 0) !== 'no',
-      italic: !!italN && arg(italN, 0) !== 'no',
+      bold: !!font && fontFlag(font, 'bold'),
+      italic: !!font && fontFlag(font, 'italic'),
+      ...(face ? { face } : {}),
+      ...(color ? { color } : {}),
       lineWidth: flw ? (numArg(flw, 0) ?? 0) : 0,
       hjustify: h,
       vjustify: v,
@@ -160,18 +223,30 @@ function readItem(node: SList): WksItem | null {
 
   if (kind === 'bitmap') {
     const pos = childNamed(node, 'pos');
-    // pngdata is a set of hex `(data "..")` lines; keep the concatenated hex.
-    let hex = '';
-    const png = childNamed(node, 'pngdata');
-    if (png)
-      for (const d of childrenNamed(png, 'data')) hex += (arg(d, 0) ?? '').replace(/\s+/g, '');
+    let b64 = '';
+    let ppi = 300;
+    // Current format: base64 chunks in (data "…" "…") directly under bitmap.
+    const data = childNamed(node, 'data');
+    if (data) {
+      b64 = args(data).join('');
+    } else {
+      // Legacy: (pngdata (data "hex line") … ) — 32 hex bytes per line; also
+      // tolerate a (ppi N) child written by some historic exporters.
+      const png = childNamed(node, 'pngdata');
+      if (png) {
+        let hex = '';
+        for (const d of childrenNamed(png, 'data')) hex += (arg(d, 0) ?? '').replace(/\s+/g, '');
+        if (hex && HEX_RE.test(hex)) b64 = hexToBase64(hex);
+        ppi = numChild(png, 'ppi', 300);
+      }
+    }
     return {
       type: 'bitmap',
       ...base,
       pos: pos ? readPoint(pos) : { x: 0, y: 0, corner: 'rbcorner' },
       scale: numChild(node, 'scale', 1),
-      pngB64: hex,
-      ppi: png ? numChild(png, 'ppi', 300) : 300,
+      pngB64: b64,
+      ppi,
     };
   }
 

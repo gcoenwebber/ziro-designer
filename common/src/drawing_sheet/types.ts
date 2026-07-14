@@ -79,6 +79,14 @@ export interface WksRect extends WksItemBase {
   lineWidth: number;
 }
 
+/** RGBA text colour (file `(color R G B A)`, RGB 0-255, A 0..1). */
+export interface WksColor {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
 export interface WksText extends WksItemBase {
   type: 'text';
   /** Raw text, which may contain `${...}` variables resolved at layout time. */
@@ -89,6 +97,10 @@ export interface WksText extends WksItemBase {
   fontH: number;
   bold: boolean;
   italic: boolean;
+  /** Font face name (file `(font (face NAME))`); empty = stroke font. */
+  face?: string;
+  /** Text colour override (DS_DATA_ITEM_TEXT::m_TextColor); unset = layer colour. */
+  color?: WksColor;
   /** Stroke pen width in mm; 0 means "derive from size/bold". */
   lineWidth: number;
   hjustify: WksHJustify;
@@ -105,9 +117,17 @@ export interface WksBitmap extends WksItemBase {
   pos: WksPoint;
   /** Uniform scale factor (DS_DATA_ITEM_BITMAP::m_ImageBitmap scale). */
   scale: number;
-  /** PNG bytes as a hex-encoded payload (KiCad `(pngdata (data …))`); may be empty. */
+  /**
+   * PNG bytes, base64-encoded — the payload of the `(data "…" "…")` chunks the
+   * current format stores (files ≥ 20230607). Legacy hex `(pngdata (data …))`
+   * payloads are converted to base64 on read. Empty = no image (not saved).
+   */
   pngB64: string;
-  /** Pixels-per-inch of the source bitmap, for sizing (default 300). */
+  /**
+   * Pixels-per-inch used to size the image (default 300). Not written to the
+   * file: upstream derives it from the PNG itself (pHYs chunk), so this is a
+   * decoded cache the browser side fills in.
+   */
   ppi: number;
   /**
    * Natural pixel dimensions of the decoded image, when known. Not part of the
@@ -166,5 +186,11 @@ export const DEFAULT_SETUP: WksSetup = {
   bottomMargin: 10,
 };
 
-/** `.kicad_wks` format version ZiroEDA writes (matches KiCad 7+/9). */
-export const WKS_FILE_VERSION = 20220228;
+/**
+ * `.kicad_wks` format version ZiroEDA writes (ds_file_versions.h,
+ * SEXPR_WORKSHEET_FILE_VERSION: 20231118 = generator_version + V8 cleanup).
+ */
+export const WKS_FILE_VERSION = 20231118;
+
+/** `(generator_version …)` string written alongside the generator token. */
+export const WKS_GENERATOR_VERSION = '10.0';

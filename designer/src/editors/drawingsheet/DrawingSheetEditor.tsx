@@ -1,20 +1,21 @@
 /**
- * The Drawing Sheet Editor frame — the web mirror of KiCad's `pl_editor`
+ * The Drawing Sheet Editor frame — the web mirror of `pl_editor`'s
  * PL_EDITOR_FRAME (pagelayout_editor/pl_editor_frame.cpp): the menu bar
- * (menubar_pl_editor.cpp), the three toolbars with the grid / zoom / coordinate
- * / page selectors (toolbars_pl_editor.cpp), the "Design" tree of drawing-sheet
- * items (DS_DATA_MODEL / design_tree_frame.cpp), the item Properties + General
- * Options panels (properties_frame.cpp), the page-layout canvas, and the status
- * bar with the coordinate-origin corner selector.
+ * (menubar.cpp), the top / left / right toolbars with the origin and page
+ * selectors (toolbars_pl_editor.cpp), the docked properties panel
+ * (dialogs/properties_frame.cpp — see PropertiesFrame), the design inspector
+ * (dialogs/design_inspector.cpp — see DesignInspector), the page-preview
+ * settings dialog (PageSettingsDialog), the canvas with its interactive tools
+ * (DrawingSheetCanvas), and the two status-bar rows with the origin-relative
+ * coordinate readout (PL_EDITOR_FRAME::UpdateStatusBar).
  *
- * The document is a `WksSheet`; File → New loads KiCad's default template, and
+ * The document is a `WksSheet`; File → New loads the default stationery, and
  * Open / Save read and write `.kicad_wks`.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import {
   defaultDrawingSheet,
-  emptyDrawingSheet,
   parseDrawingSheet,
   serializeDrawingSheet,
   layoutDrawingSheet,
@@ -24,20 +25,27 @@ import {
   type WksSheet,
   type WksItem,
   type WksCorner,
-  type WksOption,
   type WksPoint,
-  type WksText,
   type WksLine,
   type WksRect,
-  type WksBitmap,
   type WksResolveContext,
 } from '@ziroeda/common';
 import type { Vec2 } from '@ziroeda/kimath';
-import { MenuBar, type Menu } from '../../ui/MenuBar.js';
+import { MenuBar, type Menu, type MenuItem } from '../../ui/MenuBar.js';
 import { Toolbar } from '../../ui/Toolbar.js';
 import { DS_TOP_TOOLBAR, DS_LEFT_TOOLBAR, DS_RIGHT_TOOLBAR } from './drawingSheetToolbars.js';
 import { DrawingSheetCanvas, type DrawingSheetCanvasController } from './DrawingSheetCanvas.js';
-import { imageFileToPng, decodeHexImageSize } from './wksBitmap.js';
+import { PropertiesFrame, SyntaxHelpDialog } from './PropertiesFrame.js';
+import { DesignInspector } from './DesignInspector.js';
+import {
+  PageSettingsDialog,
+  defaultPreviewSettings,
+  previewPageMM,
+  paperDescription,
+  type PreviewSettings,
+} from './PageSettingsDialog.js';
+import { imageFileToPng, decodeImageMeta } from './wksBitmap.js';
+import { drawDrawingSheetItems, DS_PAGE_COLOR } from './wksRender.js';
 import '../../ui/shell.css';
 
 export interface DrawingSheetEditorFile {
@@ -45,37 +53,40 @@ export interface DrawingSheetEditorFile {
   text: string;
 }
 
-/** Paper sizes in mm (landscape), from KiCad common/page_info.cpp. */
-const PAPER_MM: Record<string, [number, number]> = {
-  A5: [210, 148],
-  A4: [297, 210],
-  A3: [420, 297],
-  A2: [594, 420],
-  A1: [841, 594],
-  A0: [1189, 841],
-  USLetter: [279.4, 215.9],
-  USLegal: [355.6, 215.9],
-  USLedger: [431.8, 279.4],
-};
-const PAPER_ORDER = ['A4', 'A3', 'A2', 'A1', 'A0', 'A5', 'USLetter', 'USLegal', 'USLedger'];
+const UNIT_GROUP = ['unitsMm', 'unitsInches', 'unitsMils'];
+const DEFAULT_TOGGLES = new Set(['toggleGrid', 'unitsMm', 'layoutNormalMode']);
 
-const RADIO_GROUPS: string[][] = [['unitsMm', 'unitsInches', 'unitsMils']];
-const DEFAULT_TOGGLES = new Set(['toggleGrid', 'unitsMm']);
-const CORNERS: WksCorner[] = ['rbcorner', 'rtcorner', 'lbcorner', 'ltcorner'];
-const CORNER_LABEL: Record<WksCorner, string> = {
-  rbcorner: 'Right bottom',
-  rtcorner: 'Right top',
-  lbcorner: 'Left bottom',
-  ltcorner: 'Left top',
-};
+/** The 5 status-bar coordinate origins (PL_EDITOR_FRAME::m_originChoiceList). */
+const ORIGIN_CHOICES = [
+  'Left Top paper corner',
+  'Right Bottom page corner',
+  'Left Bottom page corner',
+  'Right Top page corner',
+  'Left Top page corner',
+];
 
-const TYPE_LABEL: Record<WksItem['type'], string> = {
-  line: 'Line',
-  rect: 'Rectangle',
-  text: 'Text',
-  bitmap: 'Bitmap',
-  polygon: 'Polygon',
-};
+/** Recent-files store (FILE_HISTORY), kept in localStorage. */
+const RECENT_KEY = 'ziroeda.drawingsheet.recent';
+interface RecentFile {
+  name: string;
+  text: string;
+}
+function loadRecent(): RecentFile[] {
+  try {
+    const v = localStorage.getItem(RECENT_KEY);
+    const list = v ? (JSON.parse(v) as RecentFile[]) : [];
+    return Array.isArray(list) ? list.slice(0, 5) : [];
+  } catch {
+    return [];
+  }
+}
+function saveRecent(list: RecentFile[]): void {
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 5)));
+  } catch {
+    /* storage disabled */
+  }
+}
 
 const download = (fileName: string, text: string): void => {
   const url = URL.createObjectURL(new Blob([text], { type: 'application/octet-stream' }));
@@ -86,20 +97,16 @@ const download = (fileName: string, text: string): void => {
   URL.revokeObjectURL(url);
 };
 
-/**
- * Decode the natural pixel size of any bitmap loaded from a `.kicad_wks` file
- * (the format has no pixel dimensions; KiCad derives them from the PNG). Sizes
- * are cached on the model so bbox / hit-testing size the image correctly.
- */
-async function backfillBitmapSizes(sheet: WksSheet): Promise<WksSheet> {
+/** Backfill decoded pixel size + DPI for bitmaps loaded from a file. */
+async function backfillBitmapMeta(sheet: WksSheet): Promise<WksSheet> {
   if (!sheet.items.some((it) => it.type === 'bitmap' && it.pngB64 && !(it.pxW && it.pxW > 0)))
     return sheet;
   const items = await Promise.all(
     sheet.items.map(async (it) => {
       if (it.type !== 'bitmap' || !it.pngB64 || (it.pxW && it.pxW > 0)) return it;
       try {
-        const { w, h } = await decodeHexImageSize(it.pngB64);
-        return { ...it, pxW: w, pxH: h };
+        const { w, h, ppi } = await decodeImageMeta(it.pngB64);
+        return { ...it, pxW: w, pxH: h, ppi };
       } catch {
         return it;
       }
@@ -107,6 +114,17 @@ async function backfillBitmapSizes(sheet: WksSheet): Promise<WksSheet> {
   );
   return { ...sheet, items };
 }
+
+/** A fresh item-base for newly placed items (AddDrawingSheetItem defaults). */
+const NEW_BASE = {
+  name: '',
+  option: 'normal' as const,
+  repeat: 1,
+  incrx: 0,
+  incry: 0,
+  incrlabel: 1,
+  comment: '',
+};
 
 export function DrawingSheetEditor({
   onExitToHome,
@@ -124,56 +142,61 @@ export function DrawingSheetEditor({
   const [selection, setSelection] = useState<ReadonlySet<number>>(new Set());
   const [activeTool, setActiveTool] = useState('select');
   const [toggles, setToggles] = useState<Set<string>>(new Set(DEFAULT_TOGGLES));
-  const [paper, setPaper] = useState('A4');
-  const [portrait, setPortrait] = useState(false);
-  const [pageNumber, setPageNumber] = useState(1);
-  const [originCorner, setOriginCorner] = useState<WksCorner>('rbcorner');
+  const [preview, setPreview] = useState<PreviewSettings>(() => ({
+    ...defaultPreviewSettings(),
+    title: projectName ?? '',
+  }));
+  const [pageNumber, setPageNumber] = useState(1); // 1 = "Page 1", 2 = "Other pages"
+  const [originChoice, setOriginChoice] = useState(0);
+  const [localOrigin, setLocalOrigin] = useState<Vec2>({ x: 0, y: 0 });
   const [cursor, setCursor] = useState<Vec2 | null>(null);
   const [scale, setScale] = useState(0);
   const [status, setStatus] = useState('Loaded default drawing sheet');
-  const [panelWidth, setPanelWidth] = useState(230);
-  const [showPageDialog, setShowPageDialog] = useState(false);
-  const [showPreviewDialog, setShowPreviewDialog] = useState(false);
+  const [moveMode, setMoveMode] = useState(false);
+  const [blackBackground, setBlackBackground] = useState(false);
   const [showInspector, setShowInspector] = useState(false);
-  // pl_editor's title-block display: 'preview' resolves ${…} to sample values,
-  // 'edit' shows the raw field templates (Show title block in preview/edit mode).
-  const [titleMode, setTitleMode] = useState<'preview' | 'edit'>('preview');
+  const [showPageDialog, setShowPageDialog] = useState(false);
+  const [showSyntaxHelp, setShowSyntaxHelp] = useState(false);
+  const [showPrefs, setShowPrefs] = useState(false);
+  const [recent, setRecent] = useState<RecentFile[]>(loadRecent);
 
   const controller = useRef<DrawingSheetCanvasController>(null);
   const openInputRef = useRef<HTMLInputElement>(null);
   const appendInputRef = useRef<HTMLInputElement>(null);
   const bitmapInputRef = useRef<HTMLInputElement>(null);
-  // Anchor point captured when the bitmap tool is clicked, consumed once the
-  // user chooses an image file (KiCad's Place → Image opens a file dialog).
   const pendingBitmapPos = useRef<WksPoint | null>(null);
-  // Internal clipboard for Edit → Cut / Copy / Paste (pl_editor clipboard).
+  // Index of the two-click item currently being drawn, or null.
+  const drawingIndex = useRef<number | null>(null);
+  // One undo push per point-editor drag.
+  const pointDragUndoPushed = useRef(false);
+  // Internal clipboard for Edit → Cut / Copy / Paste.
   const clipboard = useRef<WksItem[]>([]);
 
+  // Title-block display mode: normal (resolved) vs edit (raw ${…} tokens).
+  const editMode = toggles.has('layoutEditMode');
+
   // ---- page geometry ----
-  const pageMM = useMemo<[number, number]>(() => {
-    const base = PAPER_MM[paper] ?? PAPER_MM.A4!;
-    return portrait ? [base[1], base[0]] : base;
-  }, [paper, portrait]);
+  const pageMM = useMemo(() => previewPageMM(preview), [preview]);
   const pageW = mmToIU(pageMM[0]);
   const pageH = mmToIU(pageMM[1]);
 
-  // ---- title-block preview context (pl_editor's Page-1 example values) ----
+  // ---- title-block resolve context (fed by the Page Settings preview data) ----
   const resolveCtx = useMemo<WksResolveContext>(
     () => ({
       pageNumber,
-      sheetCount: 1,
-      title: projectName || 'Drawing Sheet',
-      rev: 'A',
-      date: new Date().toISOString().slice(0, 10),
-      company: '',
-      comments: [],
-      paper,
-      fileName: projectName ? `${projectName}.kicad_sch` : '',
+      sheetCount: pageNumber > 1 ? 2 : 1,
+      title: preview.title,
+      rev: preview.rev,
+      date: preview.date,
+      company: preview.company,
+      comments: preview.comments,
+      paper: preview.paper,
+      fileName,
       sheetPath: '/',
       appVersion: 'ZiroEDA',
-      rawText: titleMode === 'edit',
+      rawText: editMode,
     }),
-    [pageNumber, projectName, paper, titleMode],
+    [pageNumber, preview, fileName, editMode],
   );
 
   const draws = useMemo(
@@ -192,6 +215,21 @@ export function DrawingSheetEditor({
     setStatus(description);
   }, []);
 
+  /** Push the current sheet on the undo stack without changing it (in-flight edits). */
+  const pushUndo = useCallback(() => {
+    setSheet((cur) => {
+      undoStack.current.push(cur);
+      redoStack.current = [];
+      return cur;
+    });
+    setDirty(true);
+  }, []);
+
+  /** Silent update used while dragging (no extra undo entries). */
+  const updateSheet = useCallback((fn: (cur: WksSheet) => WksSheet) => {
+    setSheet(fn);
+  }, []);
+
   const undo = useCallback(() => {
     setSheet((cur) => {
       const p = undoStack.current.pop();
@@ -200,6 +238,7 @@ export function DrawingSheetEditor({
       return p;
     });
     setSelection(new Set());
+    drawingIndex.current = null;
   }, []);
   const redo = useCallback(() => {
     setSheet((cur) => {
@@ -212,37 +251,54 @@ export function DrawingSheetEditor({
   }, []);
 
   // ---- file ops ----
-  const newSheet = useCallback((empty = false) => {
+  const addRecent = useCallback((name: string, text: string) => {
+    setRecent((prev) => {
+      const next = [{ name, text }, ...prev.filter((r) => r.name !== name)].slice(0, 5);
+      saveRecent(next);
+      return next;
+    });
+  }, []);
+
+  const newSheet = useCallback(() => {
     undoStack.current = [];
     redoStack.current = [];
-    setSheet(empty ? emptyDrawingSheet() : defaultDrawingSheet());
+    setSheet(defaultDrawingSheet());
     setSelection(new Set());
     setDirty(false);
     setFileName('drawing_sheet.kicad_wks');
-    setStatus(empty ? 'New empty drawing sheet' : 'New drawing sheet (default template)');
+    setStatus('New drawing sheet');
     requestAnimationFrame(() => controller.current?.zoomToFit());
   }, []);
 
-  const openFile = useCallback(async (file: File) => {
-    try {
-      const parsed = await backfillBitmapSizes(parseDrawingSheet(await file.text()));
-      undoStack.current = [];
-      redoStack.current = [];
-      setSheet(parsed);
-      setSelection(new Set());
-      setDirty(false);
-      setFileName(file.name);
-      setStatus(`Opened ${file.name} (${parsed.items.length} items)`);
-      requestAnimationFrame(() => controller.current?.zoomToFit());
-    } catch (err) {
-      setStatus(`Failed to open ${file.name}: ${(err as Error).message}`);
-    }
-  }, []);
+  const openText = useCallback(
+    async (name: string, text: string) => {
+      try {
+        const parsed = await backfillBitmapMeta(parseDrawingSheet(text));
+        undoStack.current = [];
+        redoStack.current = [];
+        setSheet(parsed);
+        setSelection(new Set());
+        setDirty(false);
+        setFileName(name);
+        setStatus(`Opened ${name} (${parsed.items.length} items)`);
+        addRecent(name, text);
+        requestAnimationFrame(() => controller.current?.zoomToFit());
+      } catch (err) {
+        setStatus(`Failed to open ${name}: ${(err as Error).message}`);
+      }
+    },
+    [addRecent],
+  );
+
+  const openFile = useCallback(
+    async (file: File) => openText(file.name, await file.text()),
+    [openText],
+  );
 
   const appendFile = useCallback(
     async (file: File) => {
       try {
-        const parsed = await backfillBitmapSizes(parseDrawingSheet(await file.text()));
+        const parsed = await backfillBitmapMeta(parseDrawingSheet(await file.text()));
         commit(
           { ...sheet, items: [...sheet.items, ...parsed.items] },
           `Appended ${parsed.items.length} items from ${file.name}`,
@@ -255,21 +311,45 @@ export function DrawingSheetEditor({
   );
 
   const save = useCallback(() => {
-    download(fileName, serializeDrawingSheet(sheet));
+    const text = serializeDrawingSheet(sheet);
+    download(fileName, text);
+    addRecent(fileName, text);
     setDirty(false);
     setStatus(`Saved ${fileName}`);
-  }, [fileName, sheet]);
+  }, [fileName, sheet, addRecent]);
 
   const saveAs = useCallback(() => {
     const name = window.prompt('Save drawing sheet as:', fileName) || fileName;
     const finalName = /\.kicad_wks$/i.test(name) ? name : `${name}.kicad_wks`;
+    const text = serializeDrawingSheet(sheet);
     setFileName(finalName);
-    download(finalName, serializeDrawingSheet(sheet));
+    download(finalName, text);
+    addRecent(finalName, text);
     setDirty(false);
     setStatus(`Saved ${finalName}`);
-  }, [fileName, sheet]);
+  }, [fileName, sheet, addRecent]);
 
-  // ---- placement (convert a page-space IU point to an anchored mm point) ----
+  /** Print the sheet: render the page alone to a bitmap and print that. */
+  const printSheet = useCallback(() => {
+    const scalePx = 2480 / pageW; // ~300 DPI for an A4-wide page
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(pageW * scalePx);
+    cv.height = Math.round(pageH * scalePx);
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+    ctx.fillStyle = DS_PAGE_COLOR;
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(scalePx, 0, 0, scalePx, 0, 0);
+    drawDrawingSheetItems(ctx, draws, new Set(), { minWidth: 1 / scalePx });
+    const w = window.open('', '_blank', 'width=900,height=700');
+    if (!w) return;
+    w.document.write(
+      `<title>${fileName}</title><img src="${cv.toDataURL('image/png')}" style="width:100%" onload="window.print()">`,
+    );
+    w.document.close();
+  }, [draws, pageW, pageH, fileName]);
+
+  // ---- placement: page-space IU point → anchored mm point ----
   const anchoredPoint = useCallback(
     (p: Vec2, corner: WksCorner): WksPoint => {
       const s = sheet.setup;
@@ -287,7 +367,6 @@ export function DrawingSheetEditor({
           return { corner, x: round(right - px), y: round(py - top) };
         case 'lbcorner':
           return { corner, x: round(px - left), y: round(bottom - py) };
-        case 'rbcorner':
         default:
           return { corner, x: round(right - px), y: round(bottom - py) };
       }
@@ -295,30 +374,104 @@ export function DrawingSheetEditor({
     [sheet.setup, pageMM],
   );
 
+  /** Anchored mm point → page-space IU (for the point-editor handles). */
+  const anchoredToIU = useCallback(
+    (p: WksPoint): Vec2 => {
+      const s = sheet.setup;
+      const left = s.leftMargin,
+        top = s.topMargin;
+      const right = pageMM[0] - s.rightMargin,
+        bottom = pageMM[1] - s.bottomMargin;
+      switch (p.corner) {
+        case 'ltcorner':
+          return { x: mmToIU(left + p.x), y: mmToIU(top + p.y) };
+        case 'rtcorner':
+          return { x: mmToIU(right - p.x), y: mmToIU(top + p.y) };
+        case 'lbcorner':
+          return { x: mmToIU(left + p.x), y: mmToIU(bottom - p.y) };
+        default:
+          return { x: mmToIU(right - p.x), y: mmToIU(bottom - p.y) };
+      }
+    },
+    [sheet.setup, pageMM],
+  );
+
+  // ---- drawing tools (first click creates, motion drags, second finishes) ----
+  const onDrawFirst = useCallback(
+    (tool: string, at: Vec2) => {
+      const pos = anchoredPoint(at, 'rbcorner');
+      const item: WksLine | WksRect = {
+        type: tool === 'dsAddLine' ? 'line' : 'rect',
+        ...NEW_BASE,
+        start: pos,
+        end: pos,
+        lineWidth: 0,
+      };
+      pushUndo();
+      updateSheet((cur) => {
+        drawingIndex.current = cur.items.length;
+        return { ...cur, items: [...cur.items, item] };
+      });
+      setSelection(new Set()); // selected only once placed
+    },
+    [anchoredPoint, pushUndo, updateSheet],
+  );
+
+  const onDrawMove = useCallback(
+    (at: Vec2) => {
+      const idx = drawingIndex.current;
+      if (idx === null) return;
+      const end = anchoredPoint(at, 'rbcorner');
+      updateSheet((cur) => {
+        const items = cur.items.slice();
+        const it = items[idx];
+        if (!it || (it.type !== 'line' && it.type !== 'rect')) return cur;
+        items[idx] = { ...it, end };
+        return { ...cur, items };
+      });
+    },
+    [anchoredPoint, updateSheet],
+  );
+
+  const onDrawSecond = useCallback(
+    (at: Vec2) => {
+      const idx = drawingIndex.current;
+      drawingIndex.current = null;
+      if (idx === null) return;
+      onDrawMove(at);
+      drawingIndex.current = null;
+      setSelection(new Set([idx]));
+      setDirty(true);
+      setStatus('Item placed');
+      // The tool stays active for the next placement, as upstream does.
+    },
+    [onDrawMove],
+  );
+
+  const cancelDrawing = useCallback(() => {
+    if (drawingIndex.current === null) return;
+    drawingIndex.current = null;
+    undo(); // roll back the in-flight item
+  }, [undo]);
+
+  // ---- one-click tools ----
   const addItem = useCallback(
     (item: WksItem, description: string) => {
       const next = { ...sheet, items: [...sheet.items, item] };
       commit(next, description);
       setSelection(new Set([next.items.length - 1]));
-      setActiveTool('select');
     },
     [sheet, commit],
   );
 
   const onPlacePoint = useCallback(
     (tool: string, at: Vec2) => {
-      const pos = anchoredPoint(at, originCorner);
+      const pos = anchoredPoint(at, 'rbcorner');
       if (tool === 'dsAddText') {
         addItem(
           {
             type: 'text',
-            name: `text ${sheet.items.length + 1}`,
-            option: 'normal',
-            repeat: 1,
-            incrx: 0,
-            incry: 0,
-            incrlabel: 1,
-            comment: '',
+            ...NEW_BASE,
             text: 'Text',
             pos,
             fontW: 0,
@@ -335,89 +488,39 @@ export function DrawingSheetEditor({
           'Add text',
         );
       } else if (tool === 'dsAddBitmap') {
-        // KiCad's Place → Image opens a file dialog; capture the anchor and prompt.
+        // Place → Image opens a file dialog; capture the anchor and prompt.
         pendingBitmapPos.current = pos;
         bitmapInputRef.current?.click();
-        setActiveTool('select');
       }
     },
-    [anchoredPoint, originCorner, addItem, sheet.items.length],
+    [anchoredPoint, addItem],
   );
 
   const onPickBitmap = useCallback(
     async (file: File) => {
       const pos =
-        pendingBitmapPos.current ?? anchoredPoint({ x: pageW / 2, y: pageH / 2 }, originCorner);
+        pendingBitmapPos.current ?? anchoredPoint({ x: pageW / 2, y: pageH / 2 }, 'rbcorner');
       pendingBitmapPos.current = null;
       try {
-        const { hex, pxW, pxH } = await imageFileToPng(file);
+        const { b64, pxW, pxH, ppi } = await imageFileToPng(file);
         addItem(
           {
             type: 'bitmap',
-            name: `bitmap ${sheet.items.length + 1}`,
-            option: 'normal',
-            repeat: 1,
-            incrx: 0,
-            incry: 0,
-            incrlabel: 1,
-            comment: '',
+            ...NEW_BASE,
             pos,
             scale: 1,
-            pngB64: hex,
-            ppi: 300,
+            pngB64: b64,
+            ppi,
             pxW,
             pxH,
           },
-          `Add bitmap (${file.name})`,
+          `Add image (${file.name})`,
         );
       } catch (err) {
         setStatus(`Failed to load image ${file.name}: ${(err as Error).message}`);
       }
     },
-    [anchoredPoint, originCorner, addItem, sheet.items.length, pageW, pageH],
-  );
-
-  const onPlaceSegment = useCallback(
-    (tool: string, a: Vec2, b: Vec2) => {
-      const start = anchoredPoint(a, originCorner);
-      const end = anchoredPoint(b, originCorner);
-      if (tool === 'dsAddLine') {
-        addItem(
-          {
-            type: 'line',
-            name: `line ${sheet.items.length + 1}`,
-            option: 'normal',
-            repeat: 1,
-            incrx: 0,
-            incry: 0,
-            incrlabel: 1,
-            comment: '',
-            start,
-            end,
-            lineWidth: 0,
-          },
-          'Add line',
-        );
-      } else if (tool === 'dsAddRect') {
-        addItem(
-          {
-            type: 'rect',
-            name: `rect ${sheet.items.length + 1}`,
-            option: 'normal',
-            repeat: 1,
-            incrx: 0,
-            incry: 0,
-            incrlabel: 1,
-            comment: '',
-            start,
-            end,
-            lineWidth: 0,
-          },
-          'Add rectangle',
-        );
-      }
-    },
-    [anchoredPoint, originCorner, addItem, sheet.items.length],
+    [anchoredPoint, addItem, pageW, pageH],
   );
 
   // ---- selection edits ----
@@ -453,18 +556,14 @@ export function DrawingSheetEditor({
     setSelection(new Set());
   }, [sheet, selection, commit]);
 
-  const duplicateSelection = useCallback(() => {
-    if (selection.size === 0) return;
-    const copies = [...selection]
-      .sort((a, b) => a - b)
-      .map((i) => {
-        const off = { x: mmToIU(2), y: mmToIU(2) };
-        return translateItem(sheet.items[i]!, off);
-      });
-    const next = { ...sheet, items: [...sheet.items, ...copies] };
-    commit(next, `Duplicated ${copies.length} item${copies.length === 1 ? '' : 's'}`);
-    setSelection(new Set(copies.map((_, k) => sheet.items.length + k)));
-  }, [sheet, selection, commit]);
+  const onDeleteClick = useCallback(
+    (src: number) => {
+      const items = sheet.items.filter((_, i) => i !== src);
+      commit({ ...sheet, items }, 'Deleted 1 item');
+      setSelection(new Set());
+    },
+    [sheet, commit],
+  );
 
   const copySelection = useCallback(() => {
     if (selection.size === 0) return;
@@ -491,9 +590,8 @@ export function DrawingSheetEditor({
     deleteSelection();
   }, [selection, copySelection, deleteSelection]);
 
-  // ---- property editing ----
+  // ---- properties ----
   const selectedIndex = selection.size === 1 ? [...selection][0]! : -1;
-  const selectedItem = selectedIndex >= 0 ? sheet.items[selectedIndex] : undefined;
 
   const updateSelected = useCallback(
     (patch: Partial<WksItem>) => {
@@ -512,16 +610,98 @@ export function DrawingSheetEditor({
     [sheet, commit],
   );
 
-  // ---- toolbar / toggles ----
+  // ---- point editor (single selected line/rect) ----
+  const selectedShape =
+    selectedIndex >= 0 &&
+    (sheet.items[selectedIndex]?.type === 'line' || sheet.items[selectedIndex]?.type === 'rect')
+      ? (sheet.items[selectedIndex] as WksLine | WksRect)
+      : null;
+
+  const editPoints = useMemo<Vec2[]>(() => {
+    if (!selectedShape || moveMode) return [];
+    const a = anchoredToIU(selectedShape.start);
+    const b = anchoredToIU(selectedShape.end);
+    if (selectedShape.type === 'line') return [a, b];
+    // Rect: TL, TR, BL, BR of the current geometry.
+    const minX = Math.min(a.x, b.x),
+      maxX = Math.max(a.x, b.x);
+    const minY = Math.min(a.y, b.y),
+      maxY = Math.max(a.y, b.y);
+    return [
+      { x: minX, y: minY },
+      { x: maxX, y: minY },
+      { x: minX, y: maxY },
+      { x: maxX, y: maxY },
+    ];
+  }, [selectedShape, anchoredToIU, moveMode]);
+
+  const onPointDrag = useCallback(
+    (index: number, at: Vec2) => {
+      if (!selectedShape || selectedIndex < 0) return;
+      if (!pointDragUndoPushed.current) {
+        pointDragUndoPushed.current = true;
+        pushUndo();
+      }
+      updateSheet((cur) => {
+        const items = cur.items.slice();
+        const it = items[selectedIndex];
+        if (!it || (it.type !== 'line' && it.type !== 'rect')) return cur;
+        const a = anchoredToIU(it.start);
+        const b = anchoredToIU(it.end);
+        let nextStart = it.start;
+        let nextEnd = it.end;
+        if (it.type === 'line') {
+          if (index === 0) nextStart = anchoredPoint(at, it.start.corner);
+          else nextEnd = anchoredPoint(at, it.end.corner);
+        } else {
+          // Rect corners: move the x of whichever endpoint holds that side,
+          // and the y of whichever endpoint holds that edge (RECT_* cases).
+          const leftIsStart = a.x <= b.x;
+          const topIsStart = a.y <= b.y;
+          const isLeft = index === 0 || index === 2;
+          const isTop = index === 0 || index === 1;
+          const xTarget = isLeft === leftIsStart ? 'start' : 'end';
+          const yTarget = isTop === topIsStart ? 'start' : 'end';
+          const sIU = { x: a.x, y: a.y };
+          const eIU = { x: b.x, y: b.y };
+          if (xTarget === 'start') sIU.x = at.x;
+          else eIU.x = at.x;
+          if (yTarget === 'start') sIU.y = at.y;
+          else eIU.y = at.y;
+          nextStart = anchoredPoint(sIU, it.start.corner);
+          nextEnd = anchoredPoint(eIU, it.end.corner);
+        }
+        items[selectedIndex] = { ...it, start: nextStart, end: nextEnd };
+        return { ...cur, items };
+      });
+    },
+    [selectedShape, selectedIndex, anchoredToIU, anchoredPoint, pushUndo, updateSheet],
+  );
+
+  const onPointDragEnd = useCallback(() => {
+    pointDragUndoPushed.current = false;
+    setStatus('Resize');
+  }, []);
+
+  // ---- toolbars ----
   const onLeftToggle = useCallback((id: string) => {
     setToggles((prev) => {
-      const group = RADIO_GROUPS.find((g) => g.includes(id));
       const next = new Set(prev);
-      if (group) {
-        for (const g of group) next.delete(g);
+      if (UNIT_GROUP.includes(id)) {
+        for (const g of UNIT_GROUP) next.delete(g);
         next.add(id);
       } else if (next.has(id)) next.delete(id);
       else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const setTitleBlockMode = useCallback((mode: 'layoutNormalMode' | 'layoutEditMode') => {
+    setToggles((prev) => {
+      const next = new Set(prev);
+      next.delete('layoutNormalMode');
+      next.delete('layoutEditMode');
+      next.add(mode);
       return next;
     });
   }, []);
@@ -530,7 +710,7 @@ export function DrawingSheetEditor({
     (id: string) => {
       switch (id) {
         case 'new':
-          newSheet(false);
+          newSheet();
           break;
         case 'open':
           openInputRef.current?.click();
@@ -538,11 +718,8 @@ export function DrawingSheetEditor({
         case 'save':
           save();
           break;
-        case 'pageSettings':
-          setShowPageDialog(true);
-          break;
         case 'print':
-          window.print();
+          printSheet();
           break;
         case 'undo':
           undo();
@@ -568,31 +745,32 @@ export function DrawingSheetEditor({
         case 'inspect':
           setShowInspector(true);
           break;
+        case 'previewSettings':
+          setShowPageDialog(true);
+          break;
+        case 'layoutNormalMode':
+          setTitleBlockMode('layoutNormalMode');
+          break;
+        case 'layoutEditMode':
+          setTitleBlockMode('layoutEditMode');
+          break;
         default:
           break;
       }
     },
-    [newSheet, save, undo, redo],
+    [newSheet, save, printSheet, undo, redo, setTitleBlockMode],
   );
 
-  const onRightTool = useCallback(
-    (id: string) => {
-      if (id === 'appendSheet') {
-        appendInputRef.current?.click();
-        setActiveTool('select');
-        return;
-      }
-      if (id === 'dsDelete') {
-        deleteSelection();
-        setActiveTool('select');
-        return;
-      }
-      setActiveTool(id);
-    },
-    [deleteSelection],
-  );
+  const onRightTool = useCallback((id: string) => {
+    if (id === 'appendSheet') {
+      appendInputRef.current?.click();
+      return;
+    }
+    setMoveMode(false);
+    setActiveTool(id);
+  }, []);
 
-  // ---- keyboard ----
+  // ---- keyboard (pl_editor hotkeys: M move; standard undo/redo/clipboard) ----
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       const tgt = e.target as HTMLElement | null;
@@ -602,6 +780,12 @@ export function DrawingSheetEditor({
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         save();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n' && !e.shiftKey) {
+        e.preventDefault();
+        newSheet();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        openInputRef.current?.click();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         if (e.shiftKey) redo();
@@ -609,9 +793,8 @@ export function DrawingSheetEditor({
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
         e.preventDefault();
         redo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
-        e.preventDefault();
-        duplicateSelection();
+      } else if (typing) {
+        /* let inputs handle their keys */
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
         copySelection();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x') {
@@ -619,62 +802,74 @@ export function DrawingSheetEditor({
         cutSelection();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
         pasteClipboard();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
-        e.preventDefault();
-        setSelection(new Set(sheet.items.map((_, i) => i)));
-      } else if (typing) {
-        /* let inputs handle their keys */
       } else if (e.key === 'Escape') {
-        if (activeTool !== 'select') setActiveTool('select');
+        if (moveMode) setMoveMode(false);
+        else if (drawingIndex.current !== null) cancelDrawing();
+        else if (activeTool !== 'select') setActiveTool('select');
         else setSelection(new Set());
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
         deleteSelection();
-      } else if (e.key === 'f' || e.key === 'F') controller.current?.zoomToFit();
-      else if (e.key === 'l' || e.key === 'L') setActiveTool('dsAddLine');
-      else if (e.key === 'i' || e.key === 'I') setActiveTool('dsAddRect');
-      else if (e.key === 't' || e.key === 'T') setActiveTool('dsAddText');
+      } else if (e.key === 'm' || e.key === 'M') {
+        if (selection.size > 0) setMoveMode(true);
+      } else if (e.key === 'Home') {
+        controller.current?.zoomToFit();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [
     save,
+    newSheet,
     undo,
     redo,
-    duplicateSelection,
     deleteSelection,
     copySelection,
     cutSelection,
     pasteClipboard,
-    sheet.items,
     activeTool,
+    moveMode,
+    selection,
+    cancelDrawing,
   ]);
 
-  // ---- menus (menubar_pl_editor.cpp working subset) ----
+  // ---- menus (menubar.cpp) ----
+  const recentItems: MenuItem[] =
+    recent.length > 0
+      ? [
+          ...recent.map((r) => ({
+            label: r.name,
+            action: () => void openText(r.name, r.text),
+          })),
+          { sep: true },
+          {
+            label: 'Clear Recent Files',
+            action: () => {
+              setRecent([]);
+              saveRecent([]);
+            },
+          },
+        ]
+      : [{ label: '(empty)', disabled: true, action: () => {} }];
+
   const menus: Menu[] = useMemo(
     () => [
       {
         label: 'File',
         items: [
-          { label: 'New', icon: 'new', action: () => newSheet(false), shortcut: 'Ctrl+N' },
-          { label: 'New (empty)', action: () => newSheet(true) },
+          { label: 'New', icon: 'new', action: newSheet, shortcut: 'Ctrl+N' },
           {
             label: 'Open…',
             icon: 'open',
             action: () => openInputRef.current?.click(),
             shortcut: 'Ctrl+O',
           },
-          {
-            label: 'Append Existing Drawing Sheet…',
-            icon: 'appendSheet',
-            action: () => appendInputRef.current?.click(),
-          },
+          { label: 'Open Recent', submenu: recentItems },
           { sep: true },
           { label: 'Save', icon: 'save', action: save, shortcut: 'Ctrl+S' },
           { label: 'Save As…', icon: 'saveAs', action: saveAs },
           { sep: true },
-          { label: 'Page Settings…', icon: 'pageSettings', action: () => setShowPageDialog(true) },
-          { label: 'Print…', icon: 'print', action: () => window.print() },
+          { label: 'Print…', icon: 'print', action: printSheet },
           { sep: true },
           { label: 'Close Drawing Sheet Editor', action: onExitToHome },
         ],
@@ -701,23 +896,11 @@ export function DrawingSheetEditor({
           },
           { label: 'Paste', icon: 'paste', action: pasteClipboard, shortcut: 'Ctrl+V' },
           {
-            label: 'Duplicate',
-            action: duplicateSelection,
-            shortcut: 'Ctrl+D',
-            disabled: selection.size === 0,
-          },
-          {
             label: 'Delete',
             icon: 'dsDelete',
             action: deleteSelection,
             shortcut: 'Del',
             disabled: selection.size === 0,
-          },
-          { sep: true },
-          {
-            label: 'Select All',
-            action: () => setSelection(new Set(sheet.items.map((_, i) => i))),
-            shortcut: 'Ctrl+A',
           },
         ],
       },
@@ -730,7 +913,7 @@ export function DrawingSheetEditor({
             label: 'Zoom to Fit',
             icon: 'zoomFit',
             action: () => controller.current?.zoomToFit(),
-            shortcut: 'F',
+            shortcut: 'Home',
           },
           {
             label: 'Zoom to Selection',
@@ -741,47 +924,31 @@ export function DrawingSheetEditor({
           { label: 'Redraw View', icon: 'zoomRedraw', action: () => controller.current?.redraw() },
           { sep: true },
           {
-            label: `${toggles.has('toggleGrid') ? '✓ ' : ''}Show Grid`,
-            action: () => onLeftToggle('toggleGrid'),
+            label: 'Page Preview Settings…',
+            icon: 'previewSettings',
+            action: () => setShowPageDialog(true),
           },
-          {
-            label: `${toggles.has('crosshairFull') ? '✓ ' : ''}Full-Window Crosshair`,
-            action: () => onLeftToggle('crosshairFull'),
-          },
-          { sep: true },
-          {
-            label: `${toggles.has('unitsMm') ? '✓ ' : ''}Millimetres`,
-            action: () => onLeftToggle('unitsMm'),
-          },
-          {
-            label: `${toggles.has('unitsInches') ? '✓ ' : ''}Inches`,
-            action: () => onLeftToggle('unitsInches'),
-          },
-          {
-            label: `${toggles.has('unitsMils') ? '✓ ' : ''}Mils`,
-            action: () => onLeftToggle('unitsMils'),
-          },
-          { sep: true },
-          {
-            label: `${titleMode === 'preview' ? '✓ ' : ''}Show Title Block in Preview Mode`,
-            action: () => setTitleMode('preview'),
-          },
-          {
-            label: `${titleMode === 'edit' ? '✓ ' : ''}Show Title Block in Edit Mode`,
-            action: () => setTitleMode('edit'),
-          },
-          { label: 'Page Preview Settings…', action: () => setShowPreviewDialog(true) },
-          { sep: true },
-          { label: 'Show Design Inspector', icon: 'inspect', action: () => setShowInspector(true) },
         ],
       },
       {
         label: 'Place',
         items: [
-          { label: 'Line', icon: 'dsAddLine', action: () => setActiveTool('dsAddLine') },
-          { label: 'Rectangle', icon: 'dsAddRect', action: () => setActiveTool('dsAddRect') },
-          { label: 'Text', icon: 'dsAddText', action: () => setActiveTool('dsAddText') },
-          { label: 'Bitmap', icon: 'dsAddBitmap', action: () => setActiveTool('dsAddBitmap') },
+          {
+            label: 'Draw Lines',
+            icon: 'dsAddLine',
+            action: () => setActiveTool('dsAddLine'),
+          },
+          {
+            label: 'Draw Rectangles',
+            icon: 'dsAddRect',
+            action: () => setActiveTool('dsAddRect'),
+          },
+          { label: 'Draw Text', icon: 'dsAddText', action: () => setActiveTool('dsAddText') },
+          {
+            label: 'Place Bitmaps',
+            icon: 'dsAddBitmap',
+            action: () => setActiveTool('dsAddBitmap'),
+          },
           { sep: true },
           {
             label: 'Append Existing Drawing Sheet…',
@@ -798,14 +965,12 @@ export function DrawingSheetEditor({
       },
       {
         label: 'Preferences',
-        items: [
-          { label: 'Page Settings…', action: () => setShowPageDialog(true) },
-          { label: 'Page Preview Settings…', action: () => setShowPreviewDialog(true) },
-        ],
+        items: [{ label: 'Preferences…', action: () => setShowPrefs(true) }],
       },
       {
         label: 'Help',
         items: [
+          { label: 'Syntax Help (text variables)', action: () => setShowSyntaxHelp(true) },
           { label: 'About ZiroEDA', action: () => setStatus('ZiroEDA Drawing Sheet Editor') },
         ],
       },
@@ -814,19 +979,16 @@ export function DrawingSheetEditor({
       newSheet,
       save,
       saveAs,
+      printSheet,
       undo,
       redo,
       cutSelection,
       copySelection,
       pasteClipboard,
-      duplicateSelection,
       deleteSelection,
       selection,
-      sheet.items,
-      toggles,
-      onLeftToggle,
-      titleMode,
       onExitToHome,
+      recentItems,
     ],
   );
 
@@ -836,37 +998,52 @@ export function DrawingSheetEditor({
     document.title = title;
   }, [title]);
 
-  // ---- unit-aware coordinate readout (relative to the origin corner) ----
-  const unit = toggles.has('unitsInches') ? 'in' : toggles.has('unitsMils') ? 'mils' : 'mm';
-  const coordText = useMemo(() => {
-    if (!cursor) return 'X — Y —';
-    const rel = anchoredPoint(cursor, originCorner);
-    const conv = (mm: number): string =>
-      unit === 'in'
-        ? (mm / 25.4).toFixed(4)
-        : unit === 'mils'
-          ? ((mm / 25.4) * 1000).toFixed(1)
-          : mm.toFixed(3);
-    return `X ${conv(rel.x)} Y ${conv(rel.y)}`;
-  }, [cursor, anchoredPoint, originCorner, unit]);
-  const gridIU =
-    mmToIU(unit === 'in' ? 25.4 : unit === 'mils' ? 25.4 : 5) * (unit === 'mm' ? 1 : 0.1);
+  // ---- status bar (UpdateStatusBar) ----
+  const unit = toggles.has('unitsInches') ? 'inches' : toggles.has('unitsMils') ? 'mils' : 'mm';
+  const toUser = useCallback(
+    (iu: number): number => {
+      const mm = iuToMM(iu);
+      return unit === 'inches' ? mm / 25.4 : unit === 'mils' ? (mm / 25.4) * 1000 : mm;
+    },
+    [unit],
+  );
+  const fmt4 = (n: number): string => String(Number(n.toPrecision(4)));
 
-  const startResize = (e: React.MouseEvent): void => {
-    e.preventDefault();
-    const startX = e.clientX,
-      startW = panelWidth;
-    const onMove = (ev: MouseEvent): void =>
-      setPanelWidth(Math.min(420, Math.max(180, startW + ev.clientX - startX)));
-    const onUp = (): void => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      document.body.style.cursor = '';
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-    document.body.style.cursor = 'col-resize';
-  };
+  /** Origin corner in page IU + per-axis signs (ReturnCoordOriginCorner). */
+  const originInfo = useMemo((): { origin: Vec2; xs: number; ys: number } => {
+    const s = sheet.setup;
+    const left = mmToIU(s.leftMargin),
+      top = mmToIU(s.topMargin);
+    const right = mmToIU(pageMM[0] - s.rightMargin),
+      bottom = mmToIU(pageMM[1] - s.bottomMargin);
+    switch (originChoice) {
+      case 1:
+        return { origin: { x: right, y: bottom }, xs: -1, ys: -1 };
+      case 2:
+        return { origin: { x: left, y: bottom }, xs: 1, ys: -1 };
+      case 3:
+        return { origin: { x: right, y: top }, xs: -1, ys: 1 };
+      case 4:
+        return { origin: { x: left, y: top }, xs: 1, ys: 1 };
+      default:
+        return { origin: { x: 0, y: 0 }, xs: 1, ys: 1 };
+    }
+  }, [sheet.setup, pageMM, originChoice]);
+
+  const absCoord = cursor
+    ? `X ${fmt4(toUser((cursor.x - originInfo.origin.x) * originInfo.xs))}  Y ${fmt4(
+        toUser((cursor.y - originInfo.origin.y) * originInfo.ys),
+      )}`
+    : 'X —  Y —';
+  const relCoord = cursor
+    ? `dx ${fmt4(toUser((cursor.x - localOrigin.x) * originInfo.xs))}  dy ${fmt4(
+        toUser((cursor.y - localOrigin.y) * originInfo.ys),
+      )}`
+    : 'dx —  dy —';
+
+  // Grid: 1 mm in metric, 0.1 in imperial (about the pl_editor defaults).
+  const gridIU = unit === 'mm' ? mmToIU(1) : mmToIU(2.54);
+  const gridLabel = `grid ${unit === 'mm' ? '1.0000' : unit === 'inches' ? '0.100' : '100.0'}`;
 
   return (
     <div className="ze-app">
@@ -913,99 +1090,52 @@ export function DrawingSheetEditor({
         }
         title={
           <>
-            <b>{fileName}</b>&nbsp;—&nbsp;Drawing Sheet Editor
+            <b>
+              {dirty ? '*' : ''}
+              {fileName}
+            </b>
+            &nbsp;—&nbsp;Drawing Sheet Editor
           </>
         }
       />
 
-      {/* Top toolbar + grid / zoom / coordinate-origin / page selectors. */}
+      {/* Top toolbar + the origin / page selector combos. */}
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
-        <Toolbar entries={DS_TOP_TOOLBAR} orientation="horizontal" onActivate={onTopAction} />
-        <span style={{ width: 8 }} />
-        <label className="ze-muted" style={{ fontSize: 12, marginRight: 4 }}>
-          Origin
-        </label>
+        <Toolbar
+          entries={DS_TOP_TOOLBAR}
+          orientation="horizontal"
+          toggled={toggles}
+          onActivate={onTopAction}
+        />
+        <span style={{ width: 10 }} />
         <select
           className="ze-select"
-          value={originCorner}
-          onChange={(e) => setOriginCorner(e.target.value as WksCorner)}
-          title="Coordinate reference corner"
+          value={originChoice}
+          onChange={(e) => setOriginChoice(Number(e.target.value))}
+          title="Origin of coordinates displayed to the status bar"
           style={{ margin: '0 6px' }}
         >
-          {CORNERS.map((c) => (
-            <option key={c} value={c}>
-              {CORNER_LABEL[c]}
+          {ORIGIN_CHOICES.map((c, i) => (
+            <option key={c} value={i}>
+              {c}
             </option>
           ))}
         </select>
-        <label className="ze-muted" style={{ fontSize: 12, marginRight: 4 }}>
-          Page
-        </label>
         <select
           className="ze-select"
           value={pageNumber}
           onChange={(e) => setPageNumber(Number(e.target.value))}
-          title="Preview page number (drives page1only / notonpage1 and ${#})"
+          title={
+            'Simulate page 1 or other pages to show how items\nwhich are not on all page are displayed'
+          }
           style={{ margin: '0 6px' }}
         >
           <option value={1}>Page 1</option>
-          <option value={2}>Page 2</option>
+          <option value={2}>Other pages</option>
         </select>
-        <label className="ze-muted" style={{ fontSize: 12, marginRight: 4 }}>
-          Title block
-        </label>
-        <select
-          className="ze-select"
-          value={titleMode}
-          onChange={(e) => setTitleMode(e.target.value as 'preview' | 'edit')}
-          title="Show title block in preview mode (sample values) or edit mode (raw ${…} fields)"
-          style={{ margin: '0 6px' }}
-        >
-          <option value="preview">Preview mode</option>
-          <option value="edit">Edit mode</option>
-        </select>
-        <button
-          className="ze-btn"
-          style={{ margin: '0 6px' }}
-          title="Show Design Inspector"
-          onClick={() => setShowInspector(true)}
-        >
-          Inspect
-        </button>
       </div>
 
       <div className="ze-body">
-        {/* Design tree (DS_DATA_MODEL). */}
-        <div className="ze-leftdock" style={{ width: panelWidth, minWidth: panelWidth }}>
-          <div className="ze-panel grow">
-            <div className="ze-panel-header">Design</div>
-            <div className="ze-panel-body" data-testid="ds-design-tree">
-              {sheet.items.length === 0 && (
-                <div className="ze-muted">
-                  No items. Use the right toolbar to add lines, rectangles, text…
-                </div>
-              )}
-              {sheet.items.map((it, i) => (
-                <div
-                  key={i}
-                  className={`ze-tree-item${selection.has(i) ? ' active' : ''}`}
-                  onClick={(e) => onSelect(i, e.shiftKey || e.ctrlKey || e.metaKey)}
-                  title={TYPE_LABEL[it.type]}
-                >
-                  <span
-                    className="ze-muted"
-                    style={{ display: 'inline-block', width: 62, fontSize: 11 }}
-                  >
-                    {TYPE_LABEL[it.type]}
-                  </span>
-                  <span>{it.name || (it.type === 'text' ? (it as WksText).text : it.type)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-        <div className="ze-splitter" onMouseDown={startResize} title="Drag to resize" />
-
         <Toolbar
           entries={DS_LEFT_TOOLBAR}
           orientation="vertical"
@@ -1024,94 +1154,80 @@ export function DrawingSheetEditor({
           showGrid={toggles.has('toggleGrid')}
           gridIU={gridIU}
           fullCrosshair={toggles.has('crosshairFull')}
+          blackBackground={blackBackground}
+          editPoints={editPoints}
+          moveMode={moveMode}
           onCursorMove={setCursor}
           onScaleChange={setScale}
           onSelect={onSelect}
           onSelectBox={onSelectBox}
           onMoveItems={moveSelection}
           onPlacePoint={onPlacePoint}
-          onPlaceSegment={onPlaceSegment}
+          onDrawFirst={onDrawFirst}
+          onDrawMove={onDrawMove}
+          onDrawSecond={onDrawSecond}
+          onDeleteClick={onDeleteClick}
+          onPointDrag={onPointDrag}
+          onPointDragEnd={onPointDragEnd}
+          onSetLocalOrigin={setLocalOrigin}
+          onMoveDrop={(d) => {
+            moveSelection(d);
+            setMoveMode(false);
+          }}
         />
 
-        {/* Properties + General Options (properties_frame.cpp). */}
-        <div className="ze-leftdock" style={{ width: 264, minWidth: 264 }}>
-          <div className="ze-panel grow" style={{ overflow: 'auto' }}>
-            <div className="ze-panel-header">Properties</div>
-            <div className="ze-panel-body" data-testid="ds-properties">
-              {selectedItem ? (
-                <ItemProperties item={selectedItem} onChange={updateSelected} />
-              ) : (
-                <div className="ze-muted" style={{ padding: 6 }}>
-                  {selection.size > 1
-                    ? `${selection.size} items selected`
-                    : 'Select an item to edit its properties.'}
-                </div>
-              )}
-            </div>
-            <div className="ze-panel-header">General Options</div>
-            <div className="ze-panel-body">
-              <GeneralOptions setup={sheet.setup} onChange={updateSetup} />
-            </div>
-          </div>
+        {/* Docked properties panel (properties_frame.cpp). */}
+        <div className="ze-leftdock" style={{ width: 272, minWidth: 272 }}>
+          <PropertiesFrame
+            sheet={sheet}
+            selectedIndex={selectedIndex}
+            onItemChange={updateSelected}
+            onSetupChange={updateSetup}
+            onShowSyntaxHelp={() => setShowSyntaxHelp(true)}
+          />
         </div>
 
         <Toolbar
           entries={DS_RIGHT_TOOLBAR}
           orientation="vertical"
           side="right"
-          activeTool={activeTool}
+          activeTool={moveMode ? '' : activeTool}
           onActivate={onRightTool}
         />
       </div>
 
-      {/* Status bar. */}
+      {/* Status bar rows (UpdateStatusBar field order). */}
       <div className="ze-statusbar" style={{ gap: 18 }}>
-        <span className="cell">
-          <b>Items</b> {sheet.items.length}
-        </span>
+        <span className="cell grow">{status}</span>
         {selection.size > 0 && (
           <span className="cell">
             <b>Selected</b> {selection.size}
           </span>
         )}
-        <span className="cell grow">{status}</span>
-        <span className="cell">
-          {paper}
-          {portrait ? ' portrait' : ' landscape'}
-        </span>
+        <span className="cell">{paperDescription(preview)}</span>
+        <span className="cell">{pageNumber === 1 ? 'Page 1' : 'Other pages'}</span>
       </div>
       <div className="ze-statusbar">
         <span className="cell">Z {scale > 0 ? (scale * 1000).toFixed(2) : '—'}</span>
         <span className="cell" data-testid="ds-coords">
-          {coordText}
+          {absCoord}
         </span>
-        <span className="cell grow">Origin: {CORNER_LABEL[originCorner]}</span>
-        <span className="cell">Page {pageNumber}</span>
+        <span className="cell">{relCoord}</span>
+        <span className="cell">{gridLabel}</span>
+        <span className="cell grow">coord origin: {ORIGIN_CHOICES[originChoice]}</span>
         <span className="cell">{unit}</span>
       </div>
 
       {showPageDialog && (
         <PageSettingsDialog
-          paper={paper}
-          portrait={portrait}
+          value={preview}
           onCancel={() => setShowPageDialog(false)}
-          onOk={(p, port) => {
-            setPaper(p);
-            setPortrait(port);
+          onOk={(next) => {
+            setPreview(next);
             setShowPageDialog(false);
-            setStatus(`Page: ${p} ${port ? 'portrait' : 'landscape'}`);
+            setStatus(`Page: ${paperDescription(next)}`);
             requestAnimationFrame(() => controller.current?.zoomToFit());
           }}
-        />
-      )}
-
-      {showPreviewDialog && (
-        <PreviewSettingsDialog
-          pageNumber={pageNumber}
-          titleMode={titleMode}
-          onClose={() => setShowPreviewDialog(false)}
-          onPageNumber={setPageNumber}
-          onTitleMode={setTitleMode}
         />
       )}
 
@@ -1119,6 +1235,7 @@ export function DrawingSheetEditor({
         <DesignInspector
           items={sheet.items}
           selection={selection}
+          paperDescription={paperDescription(preview)}
           onClose={() => setShowInspector(false)}
           onSelect={(i) => {
             setSelection(new Set([i]));
@@ -1126,611 +1243,73 @@ export function DrawingSheetEditor({
           }}
         />
       )}
-    </div>
-  );
-}
 
-// ----- properties panel -------------------------------------------------------
+      {showSyntaxHelp && <SyntaxHelpDialog onClose={() => setShowSyntaxHelp(false)} />}
 
-function Row({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '3px 6px' }}>
-      <span className="ze-muted" style={{ width: 78, fontSize: 11, flex: '0 0 auto' }}>
-        {label}
-      </span>
-      {children}
-    </div>
-  );
-}
-const inputStyle: React.CSSProperties = { width: '100%', minWidth: 0 };
-const numStyle: React.CSSProperties = { width: 64 };
-
-function NumField({
-  value,
-  onChange,
-  step = 0.1,
-}: {
-  value: number;
-  onChange: (n: number) => void;
-  step?: number;
-}): JSX.Element {
-  return (
-    <input
-      className="ze-search"
-      type="number"
-      step={step}
-      value={value}
-      style={numStyle}
-      onKeyDown={(e) => e.stopPropagation()}
-      onChange={(e) => {
-        const n = Number(e.target.value);
-        if (Number.isFinite(n)) onChange(n);
-      }}
-    />
-  );
-}
-
-function PointFields({
-  label,
-  point,
-  onChange,
-}: {
-  label: string;
-  point: WksPoint;
-  onChange: (p: WksPoint) => void;
-}): JSX.Element {
-  return (
-    <>
-      <Row label={label}>
-        <NumField value={point.x} onChange={(x) => onChange({ ...point, x })} />
-        <NumField value={point.y} onChange={(y) => onChange({ ...point, y })} />
-      </Row>
-      <Row label={`${label} corner`}>
-        <select
-          className="ze-select"
-          style={inputStyle}
-          value={point.corner}
-          onChange={(e) => onChange({ ...point, corner: e.target.value as WksCorner })}
-        >
-          {(['rbcorner', 'rtcorner', 'lbcorner', 'ltcorner'] as WksCorner[]).map((c) => (
-            <option key={c} value={c}>
-              {CORNER_LABEL[c]}
-            </option>
-          ))}
-        </select>
-      </Row>
-    </>
-  );
-}
-
-function ItemProperties({
-  item,
-  onChange,
-}: {
-  item: WksItem;
-  onChange: (patch: Partial<WksItem>) => void;
-}): JSX.Element {
-  const base = (
-    <>
-      <Row label="Name">
-        <input
-          className="ze-search"
-          style={inputStyle}
-          value={item.name}
-          onKeyDown={(e) => e.stopPropagation()}
-          onChange={(e) => onChange({ name: e.target.value })}
+      {showPrefs && (
+        <PreferencesDialog
+          blackBackground={blackBackground}
+          fullCrosshair={toggles.has('crosshairFull')}
+          onBlackBackground={setBlackBackground}
+          onFullCrosshair={(v) =>
+            setToggles((prev) => {
+              const next = new Set(prev);
+              if (v) next.add('crosshairFull');
+              else next.delete('crosshairFull');
+              return next;
+            })
+          }
+          onClose={() => setShowPrefs(false)}
         />
-      </Row>
-      <Row label="Show on">
-        <select
-          className="ze-select"
-          style={inputStyle}
-          value={item.option}
-          onChange={(e) => onChange({ option: e.target.value as WksOption })}
-        >
-          <option value="normal">All pages</option>
-          <option value="page1only">Page 1 only</option>
-          <option value="notonpage1">Not on page 1</option>
-        </select>
-      </Row>
-      <Row label="Repeat">
-        <NumField
-          step={1}
-          value={item.repeat}
-          onChange={(n) => onChange({ repeat: Math.max(1, Math.round(n)) })}
-        />
-      </Row>
-      {item.repeat > 1 && (
-        <>
-          <Row label="Step X (mm)">
-            <NumField value={item.incrx} onChange={(n) => onChange({ incrx: n })} />
-          </Row>
-          <Row label="Step Y (mm)">
-            <NumField value={item.incry} onChange={(n) => onChange({ incry: n })} />
-          </Row>
-          {item.type === 'text' && (
-            <Row label="Label step">
-              <NumField
-                step={1}
-                value={item.incrlabel}
-                onChange={(n) => onChange({ incrlabel: Math.round(n) })}
-              />
-            </Row>
-          )}
-        </>
       )}
-      <Row label="Comment">
-        <input
-          className="ze-search"
-          style={inputStyle}
-          value={item.comment}
-          onKeyDown={(e) => e.stopPropagation()}
-          onChange={(e) => onChange({ comment: e.target.value })}
-        />
-      </Row>
-    </>
-  );
-
-  if (item.type === 'text') {
-    const t = item as WksText;
-    return (
-      <div>
-        <Row label="Text">
-          <input
-            className="ze-search"
-            style={inputStyle}
-            value={t.text}
-            onKeyDown={(e) => e.stopPropagation()}
-            onChange={(e) => onChange({ text: e.target.value } as Partial<WksItem>)}
-          />
-        </Row>
-        {base}
-        <PointFields
-          label="Position"
-          point={t.pos}
-          onChange={(pos) => onChange({ pos } as Partial<WksItem>)}
-        />
-        <Row label="Font W/H (mm)">
-          <NumField value={t.fontW} onChange={(fontW) => onChange({ fontW } as Partial<WksItem>)} />
-          <NumField value={t.fontH} onChange={(fontH) => onChange({ fontH } as Partial<WksItem>)} />
-        </Row>
-        <Row label="Style">
-          <label style={{ fontSize: 11 }}>
-            <input
-              type="checkbox"
-              checked={t.bold}
-              onChange={(e) => onChange({ bold: e.target.checked } as Partial<WksItem>)}
-            />{' '}
-            Bold
-          </label>
-          <label style={{ fontSize: 11 }}>
-            <input
-              type="checkbox"
-              checked={t.italic}
-              onChange={(e) => onChange({ italic: e.target.checked } as Partial<WksItem>)}
-            />{' '}
-            Italic
-          </label>
-        </Row>
-        <Row label="H align">
-          <select
-            className="ze-select"
-            style={inputStyle}
-            value={t.hjustify}
-            onChange={(e) =>
-              onChange({ hjustify: e.target.value as WksText['hjustify'] } as Partial<WksItem>)
-            }
-          >
-            <option value="left">Left</option>
-            <option value="center">Center</option>
-            <option value="right">Right</option>
-          </select>
-        </Row>
-        <Row label="V align">
-          <select
-            className="ze-select"
-            style={inputStyle}
-            value={t.vjustify}
-            onChange={(e) =>
-              onChange({ vjustify: e.target.value as WksText['vjustify'] } as Partial<WksItem>)
-            }
-          >
-            <option value="top">Top</option>
-            <option value="center">Center</option>
-            <option value="bottom">Bottom</option>
-          </select>
-        </Row>
-        <Row label="Rotation">
-          <NumField
-            step={90}
-            value={t.rotate}
-            onChange={(rotate) => onChange({ rotate } as Partial<WksItem>)}
-          />
-        </Row>
-        <Row label="Text pen (mm)">
-          <NumField
-            step={0.05}
-            value={t.lineWidth}
-            onChange={(lineWidth) => onChange({ lineWidth } as Partial<WksItem>)}
-          />
-        </Row>
-        <Row label="Max width (mm)">
-          <NumField
-            value={t.maxlen}
-            onChange={(maxlen) => onChange({ maxlen } as Partial<WksItem>)}
-          />
-        </Row>
-        <Row label="Max height (mm)">
-          <NumField
-            value={t.maxheight}
-            onChange={(maxheight) => onChange({ maxheight } as Partial<WksItem>)}
-          />
-        </Row>
-      </div>
-    );
-  }
-
-  if (item.type === 'line' || item.type === 'rect') {
-    const l = item as WksLine | WksRect;
-    return (
-      <div>
-        {base}
-        <PointFields
-          label="Start"
-          point={l.start}
-          onChange={(start) => onChange({ start } as Partial<WksItem>)}
-        />
-        <PointFields
-          label="End"
-          point={l.end}
-          onChange={(end) => onChange({ end } as Partial<WksItem>)}
-        />
-        <Row label="Line width">
-          <NumField
-            step={0.05}
-            value={l.lineWidth}
-            onChange={(lineWidth) => onChange({ lineWidth } as Partial<WksItem>)}
-          />
-        </Row>
-      </div>
-    );
-  }
-
-  if (item.type === 'bitmap') {
-    const b = item as WksBitmap;
-    return (
-      <div>
-        {base}
-        <PointFields
-          label="Position"
-          point={b.pos}
-          onChange={(pos) => onChange({ pos } as Partial<WksItem>)}
-        />
-        <Row label="Scale">
-          <NumField value={b.scale} onChange={(scale) => onChange({ scale } as Partial<WksItem>)} />
-        </Row>
-        <Row label="PPI">
-          <NumField
-            step={1}
-            value={b.ppi}
-            onChange={(ppi) => onChange({ ppi: Math.max(1, Math.round(ppi)) } as Partial<WksItem>)}
-          />
-        </Row>
-      </div>
-    );
-  }
-
-  // polygon
-  return (
-    <div>
-      {base}
-      <PointFields
-        label="Position"
-        point={(item as any).pos}
-        onChange={(pos) => onChange({ pos } as Partial<WksItem>)}
-      />
-      <Row label="Rotation">
-        <NumField
-          step={90}
-          value={(item as any).rotate}
-          onChange={(rotate) => onChange({ rotate } as Partial<WksItem>)}
-        />
-      </Row>
-      <Row label="Line width">
-        <NumField
-          step={0.05}
-          value={(item as any).lineWidth}
-          onChange={(lineWidth) => onChange({ lineWidth } as Partial<WksItem>)}
-        />
-      </Row>
-    </div>
-  );
-}
-
-function GeneralOptions({
-  setup,
-  onChange,
-}: {
-  setup: WksSheet['setup'];
-  onChange: (patch: Partial<WksSheet['setup']>) => void;
-}): JSX.Element {
-  return (
-    <div>
-      <Row label="Text W/H (mm)">
-        <NumField value={setup.textW} onChange={(textW) => onChange({ textW })} />
-        <NumField value={setup.textH} onChange={(textH) => onChange({ textH })} />
-      </Row>
-      <Row label="Line width">
-        <NumField
-          step={0.05}
-          value={setup.lineWidth}
-          onChange={(lineWidth) => onChange({ lineWidth })}
-        />
-      </Row>
-      <Row label="Text pen">
-        <NumField
-          step={0.05}
-          value={setup.textLineWidth}
-          onChange={(textLineWidth) => onChange({ textLineWidth })}
-        />
-      </Row>
-      <Row label="Left margin">
-        <NumField value={setup.leftMargin} onChange={(leftMargin) => onChange({ leftMargin })} />
-      </Row>
-      <Row label="Right margin">
-        <NumField value={setup.rightMargin} onChange={(rightMargin) => onChange({ rightMargin })} />
-      </Row>
-      <Row label="Top margin">
-        <NumField value={setup.topMargin} onChange={(topMargin) => onChange({ topMargin })} />
-      </Row>
-      <Row label="Bottom margin">
-        <NumField
-          value={setup.bottomMargin}
-          onChange={(bottomMargin) => onChange({ bottomMargin })}
-        />
-      </Row>
-    </div>
-  );
-}
-
-function PageSettingsDialog({
-  paper,
-  portrait,
-  onOk,
-  onCancel,
-}: {
-  paper: string;
-  portrait: boolean;
-  onOk: (paper: string, portrait: boolean) => void;
-  onCancel: () => void;
-}): JSX.Element {
-  const [p, setP] = useState(paper);
-  const [port, setPort] = useState(portrait);
-  return (
-    <div className="ze-modal-backdrop" onMouseDown={onCancel}>
-      <div className="ze-modal ze-label-dialog" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="ze-modal-header">
-          Page Settings
-          <span className="x" onClick={onCancel}>
-            ✕
-          </span>
-        </div>
-        <div className="ze-label-dialog-body">
-          <div className="row">
-            <span>Paper size</span>
-            <select
-              className="ze-select"
-              value={p}
-              onChange={(e) => setP(e.target.value)}
-              autoFocus
-            >
-              {PAPER_ORDER.map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="row">
-            <span>Orientation</span>
-            <select
-              className="ze-select"
-              value={port ? 'portrait' : 'landscape'}
-              onChange={(e) => setPort(e.target.value === 'portrait')}
-            >
-              <option value="landscape">Landscape</option>
-              <option value="portrait">Portrait</option>
-            </select>
-          </div>
-        </div>
-        <div className="ze-modal-footer">
-          <button className="ze-btn" onClick={onCancel}>
-            Cancel
-          </button>
-          <button className="ze-btn primary" onClick={() => onOk(p, port)}>
-            OK
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
 
 /**
- * Page-preview settings (pl_editor properties-frame "Page 1 / Other pages" +
- * title-block display mode): choose which page to preview and whether the title
- * block shows resolved sample values or its raw `${…}` field templates.
+ * Preferences — the display options `pl_editor` keeps in its settings
+ * (pl_editor_settings.cpp `black_background`; common display options'
+ * always-show-crosshairs).
  */
-function PreviewSettingsDialog({
-  pageNumber,
-  titleMode,
-  onPageNumber,
-  onTitleMode,
+function PreferencesDialog({
+  blackBackground,
+  fullCrosshair,
+  onBlackBackground,
+  onFullCrosshair,
   onClose,
 }: {
-  pageNumber: number;
-  titleMode: 'preview' | 'edit';
-  onPageNumber: (n: number) => void;
-  onTitleMode: (m: 'preview' | 'edit') => void;
+  blackBackground: boolean;
+  fullCrosshair: boolean;
+  onBlackBackground: (v: boolean) => void;
+  onFullCrosshair: (v: boolean) => void;
   onClose: () => void;
 }): JSX.Element {
   return (
     <div className="ze-modal-backdrop" onMouseDown={onClose}>
       <div className="ze-modal ze-label-dialog" onMouseDown={(e) => e.stopPropagation()}>
         <div className="ze-modal-header">
-          Page Preview Settings
+          Preferences
           <span className="x" onClick={onClose}>
             ✕
           </span>
         </div>
-        <div className="ze-label-dialog-body">
-          <div className="row">
-            <span>Preview page</span>
-            <select
-              className="ze-select"
-              value={pageNumber}
-              onChange={(e) => onPageNumber(Number(e.target.value))}
-              autoFocus
-            >
-              <option value={1}>Page 1</option>
-              <option value={2}>Other pages</option>
-            </select>
-          </div>
-          <div className="row">
-            <span>Title block</span>
-            <select
-              className="ze-select"
-              value={titleMode}
-              onChange={(e) => onTitleMode(e.target.value as 'preview' | 'edit')}
-            >
-              <option value="preview">Show in preview mode</option>
-              <option value="edit">Show in edit mode</option>
-            </select>
-          </div>
-        </div>
-        <div className="ze-modal-footer">
-          <button className="ze-btn primary" onClick={onClose}>
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** A one-line geometry/content summary of a drawing-sheet item for the inspector. */
-function itemSummary(it: WksItem): string {
-  switch (it.type) {
-    case 'text':
-      return `"${it.text}" @ (${it.pos.x}, ${it.pos.y}) ${it.pos.corner}`;
-    case 'line':
-    case 'rect':
-      return `(${it.start.x}, ${it.start.y}) ${it.start.corner} → (${it.end.x}, ${it.end.y}) ${it.end.corner}`;
-    case 'bitmap':
-      return `@ (${it.pos.x}, ${it.pos.y}) ${it.pos.corner}, scale ${it.scale}${it.pxW ? `, ${it.pxW}×${it.pxH}px` : ''}`;
-    case 'polygon':
-      return `@ (${it.pos.x}, ${it.pos.y}) ${it.pos.corner}, ${it.contours.length} contour(s)`;
-  }
-}
-
-/**
- * Design Inspector (pl_editor "Show Design Inspector"): a table of every item in
- * the DS_DATA_MODEL with its type, name, page option, repeat and geometry. Rows
- * are clickable to select + zoom the item on the canvas.
- */
-function DesignInspector({
-  items,
-  selection,
-  onSelect,
-  onClose,
-}: {
-  items: WksItem[];
-  selection: ReadonlySet<number>;
-  onSelect: (index: number) => void;
-  onClose: () => void;
-}): JSX.Element {
-  const SHOW: Record<WksOption, string> = {
-    normal: 'All pages',
-    page1only: 'Page 1 only',
-    notonpage1: 'Not page 1',
-  };
-  return (
-    <div className="ze-modal-backdrop" onMouseDown={onClose}>
-      <div
-        className="ze-modal"
-        style={{ width: 760, maxWidth: '92vw' }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="ze-modal-header">
-          Design Inspector — {items.length} item{items.length === 1 ? '' : 's'}
-          <span className="x" onClick={onClose}>
-            ✕
-          </span>
-        </div>
-        <div style={{ maxHeight: '60vh', overflow: 'auto' }} data-testid="ds-inspector">
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr
-                style={{
-                  position: 'sticky',
-                  top: 0,
-                  background: 'var(--panel, #2b2b30)',
-                  textAlign: 'left',
-                }}
-              >
-                {['#', 'Type', 'Name', 'Show on', 'Repeat', 'Geometry'].map((h) => (
-                  <th
-                    key={h}
-                    style={{ padding: '5px 8px', borderBottom: '1px solid rgba(128,128,128,0.35)' }}
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((it, i) => (
-                <tr
-                  key={i}
-                  className={selection.has(i) ? 'active' : ''}
-                  style={{
-                    cursor: 'pointer',
-                    background: selection.has(i) ? 'rgba(74,163,255,0.18)' : undefined,
-                  }}
-                  onClick={() => {
-                    onSelect(i);
-                    onClose();
-                  }}
-                >
-                  <td style={{ padding: '4px 8px' }}>{i + 1}</td>
-                  <td style={{ padding: '4px 8px' }}>{TYPE_LABEL[it.type]}</td>
-                  <td style={{ padding: '4px 8px' }}>
-                    {it.name || <span className="ze-muted">—</span>}
-                  </td>
-                  <td style={{ padding: '4px 8px' }}>{SHOW[it.option]}</td>
-                  <td style={{ padding: '4px 8px' }}>{it.repeat}</td>
-                  <td
-                    style={{
-                      padding: '4px 8px',
-                      whiteSpace: 'nowrap',
-                      maxWidth: 320,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {itemSummary(it)}
-                  </td>
-                </tr>
-              ))}
-              {items.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="ze-muted" style={{ padding: 10 }}>
-                    No items.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <div style={{ padding: '10px 14px', fontSize: 12, display: 'grid', gap: 8 }}>
+          <label>
+            <input
+              type="checkbox"
+              checked={blackBackground}
+              onChange={(e) => onBlackBackground(e.target.checked)}
+            />{' '}
+            Use a black background
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={fullCrosshair}
+              onChange={(e) => onFullCrosshair(e.target.checked)}
+            />{' '}
+            Always show full-window crosshairs
+          </label>
         </div>
         <div className="ze-modal-footer">
           <button className="ze-btn primary" onClick={onClose}>

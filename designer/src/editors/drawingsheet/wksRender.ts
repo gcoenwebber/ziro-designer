@@ -18,16 +18,22 @@ import { getBitmapImage } from './wksBitmap.js';
 /** IU per inch: 25.4 mm/in · 10000 IU/mm. */
 const IU_PER_INCH = 254000;
 
-/** KiCad LAYER_DRAWINGSHEET default colour (a muted red-brown on the white page). */
+/** LAYER_DRAWINGSHEET default colour (a muted red-brown on the white page). */
 export const DS_ITEM_COLOR = '#c8322d';
 export const DS_PAGE_COLOR = '#ffffff';
 export const DS_BG_COLOR = '#4a4a52';
+/** Black-background display option (pl_editor_settings `black_background`). */
+export const DS_BG_COLOR_DARK = '#000000';
 export const DS_HILITE_COLOR = '#4aa3ff';
+/** DS_RENDER_SETTINGS m_brightenedColor: hover highlight of the delete picker. */
+export const DS_BRIGHTENED_COLOR = 'rgba(0,230,0,0.9)';
 
 interface RenderOpts {
   color?: string;
   /** IU pen floor so hairlines stay visible; caller passes 1 world-unit ≈ n px. */
   minWidth?: number;
+  /** Item index brightened by the interactive-delete picker (green). */
+  brightened?: number | null;
 }
 
 /** Stroke one resolved text primitive with the Newstroke font. */
@@ -113,7 +119,13 @@ export function drawDrawingSheetItems(
 
   for (const d of draws) {
     const sel = selected.has(d.src);
-    const color = sel ? DS_HILITE_COLOR : baseColor;
+    // Priority: delete-picker brighten > selection > per-item colour > layer colour.
+    const itemColor =
+      d.kind === 'text' && d.color
+        ? `rgba(${d.color.r},${d.color.g},${d.color.b},${d.color.a})`
+        : baseColor;
+    const color =
+      opts.brightened === d.src ? DS_BRIGHTENED_COLOR : sel ? DS_HILITE_COLOR : itemColor;
     switch (d.kind) {
       case 'line': {
         ctx.strokeStyle = color;

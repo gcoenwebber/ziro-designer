@@ -8,6 +8,7 @@
 
 import { iuToMM } from '../eda_units.js';
 import type { Vec2 } from '@ziroeda/kimath';
+import { layoutText } from '../font/stroke_font.js';
 import type { WksItem, WksPoint, WksCorner } from './types.js';
 import type { DsDrawItem } from './layout.js';
 
@@ -18,8 +19,8 @@ export interface WksBBox {
   maxY: number;
 }
 
-/** Approximate glyph advance as a fraction of height (Newstroke ≈ 0.7·h wide). */
-const GLYPH_ASPECT = 0.72;
+/** Line-pitch factor for multi-line text height (FONT_METRICS). */
+const INTERLINE_PITCH = 1.68;
 
 /** Bounding box (IU) of one resolved draw primitive. */
 export function drawItemBBox(d: DsDrawItem): WksBBox {
@@ -49,11 +50,16 @@ export function drawItemBBox(d: DsDrawItem): WksBBox {
       return { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
     }
     case 'text': {
-      // Approximate: width by glyph count, then rotate the box corners.
-      const longest = d.text.split('\n').reduce((n, l) => Math.max(n, l.length), 0);
-      const lines = d.text.split('\n').length;
-      const w = Math.max(longest, 1) * d.w * GLYPH_ASPECT;
-      const h = lines * d.h * 1.3;
+      // Measure with the real stroke font, then rotate the box corners.
+      const lines = d.text.split('\n');
+      let widest = 0;
+      for (const line of lines) {
+        const { width } = layoutText(line, d.h);
+        if (width > widest) widest = width;
+      }
+      const scaleX = d.h > 0 ? d.w / d.h : 1;
+      const w = Math.max(widest * scaleX, d.w);
+      const h = d.h + (lines.length - 1) * d.h * INTERLINE_PITCH;
       const hx = d.hjustify === 'left' ? 0 : d.hjustify === 'right' ? -w : -w / 2;
       const hy = d.vjustify === 'top' ? 0 : d.vjustify === 'bottom' ? -h : -h / 2;
       const rad = (-d.rotate * Math.PI) / 180;

@@ -11,6 +11,8 @@ export {
   layoutDrawingSheet,
   resolveDrawingSheetText,
   incrementLabel,
+  expandTextEscapes,
+  constrainedTextSize,
   type WksPage,
   type WksResolveContext,
   type DsDrawItem,
