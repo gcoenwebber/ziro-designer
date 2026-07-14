@@ -53,9 +53,13 @@ describe.skipIf(!existsSync(DEMOS_ROOT))('upstream demo corpus parse sweep', () 
     readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
       e.isDirectory() ? walk(`${dir}${e.name}/`) : [`${dir}${e.name}`],
     );
+  // Guarded walk: vitest executes skipped suite factories during collection,
+  // so this must not touch the filesystem when the clone is absent (CI).
   // The jetson/vme-wren showcase boards are 81/67 MB — parseable, but not
   // worth a minute of every local test run; everything else sweeps.
-  const all = walk(DEMOS_ROOT).filter((f) => statSync(f).size < 20 * 1024 * 1024);
+  const all = existsSync(DEMOS_ROOT)
+    ? walk(DEMOS_ROOT).filter((f) => statSync(f).size < 20 * 1024 * 1024)
+    : [];
   const schs = all.filter((f) => f.endsWith('.kicad_sch'));
   const pcbs = all.filter((f) => f.endsWith('.kicad_pcb'));
 
