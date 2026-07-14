@@ -97,6 +97,7 @@ const TILES: Tile[] = [
     id: 'calculator',
     name: 'Calculator Tools',
     desc: 'Show tools for calculating resistance, current capacity, etc.',
+    enabled: true,
   },
   {
     id: 'drawingsheet',
@@ -149,6 +150,7 @@ export function HomePage({
   onOpenPcb,
   onOpenSymbolEditor,
   onOpenFootprintEditor,
+  onOpenCalculator,
   initialFiles,
 }: {
   onOpenSchematic: () => void;
@@ -160,6 +162,8 @@ export function HomePage({
   /** Launch the Footprint Editor (with the open project's `.pretty` libraries, if any).
    *  `startFile` is a `.kicad_mod` to open straight away (KiCad's MAIL_FP_EDIT). */
   onOpenFootprintEditor?: (files?: PickedHomeFile[], startFile?: string) => void;
+  /** Launch the Calculator Tools (standalone, no project needed). */
+  onOpenCalculator?: () => void;
   /** A project already open in the app: keep it in the tree on return to home. */
   initialFiles?: PickedHomeFile[] | null;
 }): JSX.Element {
@@ -763,7 +767,9 @@ export function HomePage({
                     ? (): void => onOpenSymbolEditor?.(picked ?? undefined)
                     : t.id === 'footprints'
                       ? (): void => onOpenFootprintEditor?.(picked ?? undefined)
-                      : (): void => launchSchematic();
+                      : t.id === 'calculator'
+                        ? (): void => onOpenCalculator?.()
+                        : (): void => launchSchematic();
               return (
                 <button
                   key={t.id}

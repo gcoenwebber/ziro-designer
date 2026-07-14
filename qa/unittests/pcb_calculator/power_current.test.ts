@@ -1,0 +1,168 @@
+import { describe, expect, it } from 'vitest';
+import {
+  awgDiameterM,
+  cableSize,
+  fusingCurrent,
+  ipc2221CurrentA,
+  ipc2221RowForVoltage,
+  ipc2221Spacing,
+  nearestAwgIndex,
+  trackWidth,
+  viaSize,
+} from '@ziroeda/pcb_calculator';
+
+describe('track width (IPC-2221)', () => {
+  it('matches the published external example: 1 A, 10 °C, 35 µm → ~0.25 mm', () => {
+    const r = trackWidth({ currentA: 1, deltaTC: 10, lengthM: 0.1, thicknessM: 35e-6 }, true);
+    expect(r.widthM * 1000).toBeGreaterThan(0.15);
+    expect(r.widthM * 1000).toBeLessThan(0.35);
+  });
+
+  it('internal layers need about twice the width', () => {
+    const ext = trackWidth({ currentA: 2, deltaTC: 10, lengthM: 0.1, thicknessM: 35e-6 }, true);
+    const int = trackWidth({ currentA: 2, deltaTC: 10, lengthM: 0.1, thicknessM: 35e-6 }, false);
+    expect(int.widthM / ext.widthM).toBeCloseTo(2 ** (1 / 0.725), 3);
+  });
+
+  it('round-trips area ↔ current', () => {
+    const r = trackWidth({ currentA: 3, deltaTC: 20, lengthM: 1, thicknessM: 35e-6 }, true);
+    expect(ipc2221CurrentA(r.areaM2, 20, true)).toBeCloseTo(3, 6);
+  });
+
+  it('computes ohmic results', () => {
+    const r = trackWidth({ currentA: 1, deltaTC: 10, lengthM: 0.1, thicknessM: 35e-6 }, true);
+    expect(r.resistanceOhm).toBeGreaterThan(0);
+    expect(r.voltageDrop).toBeCloseTo(r.resistanceOhm, 9);
+    expect(r.powerLossW).toBeCloseTo(r.voltageDrop, 9);
+  });
+});
+
+describe('via size', () => {
+  const base = {
+    holeDiaM: 0.4e-3,
+    platingM: 35e-6,
+    lengthM: 1.6e-3,
+    padDiaM: 0.6e-3,
+    clearanceDiaM: 1.0e-3,
+    epsilonR: 4.5,
+    currentA: 1,
+    deltaTC: 10,
+  };
+
+  it('produces sane parasitics for a typical via', () => {
+    const r = viaSize(base);
+    expect(r.resistanceOhm).toBeGreaterThan(1e-5);
+    expect(r.resistanceOhm).toBeLessThan(0.01);
+    // Typical 1.6 mm via: L ≈ 1 nH, C well under 1 pF.
+    expect(r.inductanceH).toBeGreaterThan(0.3e-9);
+    expect(r.inductanceH).toBeLessThan(3e-9);
+    expect(r.capacitanceF).toBeGreaterThan(0.1e-12);
+    expect(r.capacitanceF).toBeLessThan(2e-12);
+    expect(r.aspectRatio).toBeCloseTo(4, 6);
+    expect(r.ampacityA).toBeGreaterThan(1);
+    expect(r.thermalResistance).toBeGreaterThan(0);
+  });
+
+  it('capacitance is NaN when the antipad is smaller than the pad', () => {
+    const r = viaSize({ ...base, clearanceDiaM: 0.5e-3 });
+    expect(Number.isNaN(r.capacitanceF)).toBe(true);
+  });
+});
+
+describe('electrical spacing (IPC-2221)', () => {
+  it('picks the right rows', () => {
+    expect(ipc2221RowForVoltage(12)).toBe(0);
+    expect(ipc2221RowForVoltage(16)).toBe(1);
+    expect(ipc2221RowForVoltage(500)).toBe(8);
+    expect(ipc2221RowForVoltage(501)).toBe(-1);
+  });
+
+  it('reads the table and extrapolates over 500 V', () => {
+    expect(ipc2221Spacing(30, 0)).toBe(0.05); // B1
+    expect(ipc2221Spacing(240, 2)).toBe(6.4); // B3
+    // 600 V, B2: 2.5 + 100·0.005 = 3.0 mm
+    expect(ipc2221Spacing(600, 1)).toBeCloseTo(3.0, 9);
+  });
+});
+
+describe('fusing current', () => {
+  it('Onderdonk for 1 oz / 0.5 mm track melts in the tens of amps', () => {
+    const r = fusingCurrent({
+      ambientC: 25,
+      meltingC: 1084,
+      widthM: 0.5e-3,
+      thicknessM: 35e-6,
+      timeS: 1,
+    });
+    expect(r.onderdonkA).toBeGreaterThan(5);
+    expect(r.onderdonkA).toBeLessThan(100);
+    expect(r.onderdonkValid).toBe(true);
+    expect(r.preeceA).toBeGreaterThan(0);
+  });
+
+  it('longer events fuse at lower current', () => {
+    const p = { ambientC: 25, meltingC: 1084, widthM: 0.5e-3, thicknessM: 35e-6 };
+    const short = fusingCurrent({ ...p, timeS: 0.1 });
+    const long = fusingCurrent({ ...p, timeS: 5 });
+    expect(long.onderdonkA).toBeLessThan(short.onderdonkA);
+  });
+
+  it('Preece for 30 AWG (~0.255 mm) is around 10 A', () => {
+    const r = fusingCurrent({
+      ambientC: 25,
+      meltingC: 1084,
+      widthM: awgDiameterM(30),
+      thicknessM: 0,
+      timeS: 1,
+    });
+    expect(r.preeceA).toBeGreaterThan(5);
+    expect(r.preeceA).toBeLessThan(15);
+  });
+});
+
+describe('cable size', () => {
+  it('AWG 24 diameter ≈ 0.511 mm', () => {
+    expect(awgDiameterM(24) * 1000).toBeCloseTo(0.511, 2);
+  });
+
+  it('AWG 0000 diameter ≈ 11.68 mm', () => {
+    expect(awgDiameterM(-3) * 1000).toBeCloseTo(11.68, 1);
+  });
+
+  it('nearest index round-trips', () => {
+    // Index 27 = AWG 24.
+    expect(nearestAwgIndex(awgDiameterM(24))).toBe(27);
+  });
+
+  it('AWG 10 is ~3.28 mΩ/m at 20 °C', () => {
+    const r = cableSize({
+      diameterM: awgDiameterM(10),
+      conductorTempC: 20,
+      currentDensity: 3,
+      currentA: 10,
+      lengthM: 1,
+    });
+    expect(r.resPerMeter20 * 1000).toBeGreaterThan(3.0);
+    expect(r.resPerMeter20 * 1000).toBeLessThan(3.6);
+    expect(r.voltageDrop).toBeCloseTo(r.resistanceOhm * 10, 9);
+    expect(r.powerLossW).toBeCloseTo(r.voltageDrop * 10, 9);
+  });
+
+  it('resistance rises with temperature', () => {
+    const cold = cableSize({
+      diameterM: 1e-3,
+      conductorTempC: 20,
+      currentDensity: 3,
+      currentA: 1,
+      lengthM: 1,
+    });
+    const hot = cableSize({
+      diameterM: 1e-3,
+      conductorTempC: 100,
+      currentDensity: 3,
+      currentA: 1,
+      lengthM: 1,
+    });
+    expect(hot.resPerMeter).toBeGreaterThan(cold.resPerMeter * 1.25);
+  });
+});

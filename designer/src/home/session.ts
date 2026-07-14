@@ -9,7 +9,7 @@
  * reopens the last saved project.
  */
 export interface Session {
-  view: 'home' | 'schematic' | 'pcb' | 'symbols' | 'footprints';
+  view: 'home' | 'schematic' | 'pcb' | 'symbols' | 'footprints' | 'calculator';
   startFile?: string | null;
 }
 
@@ -27,7 +27,9 @@ export function loadSession(): Session | null {
   try {
     const v = localStorage.getItem(KEY);
     const s = v ? (JSON.parse(v) as Session) : null;
-    return s && ['home', 'schematic', 'pcb', 'symbols', 'footprints'].includes(s.view) ? s : null;
+    return s && ['home', 'schematic', 'pcb', 'symbols', 'footprints', 'calculator'].includes(s.view)
+      ? s
+      : null;
   } catch {
     return null;
   }
