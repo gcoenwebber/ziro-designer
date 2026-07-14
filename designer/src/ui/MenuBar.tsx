@@ -10,11 +10,68 @@ export interface MenuItem {
   disabled?: boolean;
   /** Keyboard hint shown right-aligned (e.g. "Ctrl+S"). */
   shortcut?: string;
+  /** ACTION_MENU::CHECK items — shows a checkmark when true. */
+  checked?: boolean;
+  /** Nested submenu (KiCad ACTION_MENU submenus: Import, Export, Attributes…). */
+  items?: MenuItem[];
 }
 
 export interface Menu {
   label: string;
   items: MenuItem[];
+}
+
+function DropdownItems({ items, close }: { items: MenuItem[]; close: () => void }): JSX.Element {
+  const [openSub, setOpenSub] = useState<number | null>(null);
+  return (
+    <>
+      {items.map((it, i) =>
+        it.sep ? (
+          <div key={`s${i}`} className="ze-msep" />
+        ) : it.items ? (
+          <div
+            key={it.label ?? i}
+            className={`ze-mitem ze-msub${it.disabled ? ' disabled' : ''}`}
+            onMouseEnter={() => setOpenSub(i)}
+            onMouseLeave={() => setOpenSub((o) => (o === i ? null : o))}
+          >
+            <span className="mico">
+              {it.icon && toolbarIconUrl(it.icon) ? (
+                <img src={toolbarIconUrl(it.icon)} alt="" />
+              ) : null}
+            </span>
+            <span className="lbl">{it.label}</span>
+            <span className="sub-arrow">▸</span>
+            {openSub === i && !it.disabled && (
+              <div className="ze-dropdown ze-subdropdown">
+                <DropdownItems items={it.items} close={close} />
+              </div>
+            )}
+          </div>
+        ) : (
+          <div
+            key={it.label ?? i}
+            className={`ze-mitem${it.disabled ? ' disabled' : ''}`}
+            onClick={() => {
+              if (it.disabled) return;
+              close();
+              it.action?.();
+            }}
+          >
+            <span className="mico">
+              {it.checked ? (
+                <span className="mcheck">✓</span>
+              ) : it.icon && toolbarIconUrl(it.icon) ? (
+                <img src={toolbarIconUrl(it.icon)} alt="" />
+              ) : null}
+            </span>
+            <span className="lbl">{it.label}</span>
+            {it.shortcut && <span className="sc">{it.shortcut}</span>}
+          </div>
+        ),
+      )}
+    </>
+  );
 }
 
 /** A KiCad-style menu bar with click-to-open dropdowns and hover-to-switch. */
@@ -55,29 +112,7 @@ export function MenuBar({
           {menu.label}
           {open === menu.label && (
             <div className="ze-dropdown" onClick={(e) => e.stopPropagation()}>
-              {menu.items.map((it, i) =>
-                it.sep ? (
-                  <div key={`s${i}`} className="ze-msep" />
-                ) : (
-                  <div
-                    key={it.label ?? i}
-                    className={`ze-mitem${it.disabled ? ' disabled' : ''}`}
-                    onClick={() => {
-                      if (it.disabled) return;
-                      setOpen(null);
-                      it.action?.();
-                    }}
-                  >
-                    <span className="mico">
-                      {it.icon && toolbarIconUrl(it.icon) ? (
-                        <img src={toolbarIconUrl(it.icon)} alt="" />
-                      ) : null}
-                    </span>
-                    <span className="lbl">{it.label}</span>
-                    {it.shortcut && <span className="sc">{it.shortcut}</span>}
-                  </div>
-                ),
-              )}
+              <DropdownItems items={menu.items} close={() => setOpen(null)} />
             </div>
           )}
         </div>

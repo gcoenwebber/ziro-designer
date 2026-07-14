@@ -605,6 +605,21 @@ body {
   background: var(--chrome-border);
   margin: 4px 0;
 }
+.ze-mitem .mcheck {
+  font-size: 12px;
+  line-height: 1;
+}
+.ze-mitem .sub-arrow {
+  color: #8a8c90;
+  padding-left: 20px;
+}
+.ze-msub {
+  position: relative;
+}
+.ze-subdropdown {
+  top: -5px;
+  left: 100%;
+}
 
 /* Symbol chooser modal (KiCad-style centered dialog) */
 .ze-modal-backdrop {

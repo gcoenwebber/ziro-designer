@@ -52,7 +52,7 @@ import { SymbolChooser } from './components/SymbolChooser.js';
 import { Toolbar } from '../../ui/Toolbar.js';
 import { TOP_TOOLBAR, LEFT_TOOLBAR, RIGHT_TOOLBAR } from '../../ui/toolbars.js';
 import { MenuBar } from '../../ui/MenuBar.js';
-import { buildMenus, TOOL_HOTKEYS } from '../../ui/menus.js';
+import { buildMenus, TOOL_HOTKEYS } from './menubar.js';
 import { LoadingOverlay, nextPaint } from '../../ui/LoadingOverlay.js';
 import { PreferencesDialog } from '../../prefs/PreferencesDialog.js';
 import { settings, gridSizeToIU } from '../../prefs/settings.js';
@@ -854,6 +854,27 @@ export function SchematicEditor({
       else if (id === 'showPcbNew') onShowPcb?.();
       else if (id === 'symbolEditor') onShowSymbolEditor?.();
       else if (id === 'openPreferences') setPrefsOpen(true);
+      // Menu Cut/Copy re-dispatch the native clipboard events our document
+      // handlers already implement; Paste reads the async clipboard API (menu
+      // clicks can't synthesize a trusted paste event).
+      else if (id === 'cut') document.execCommand('cut');
+      else if (id === 'copy') document.execCommand('copy');
+      else if (id === 'paste')
+        void navigator.clipboard?.readText().then((text) => {
+          setDoc((d) => {
+            const payload = d ? parsePastedText(text, d) : null;
+            if (payload) {
+              setActiveTool('select');
+              setPastePending(payload);
+            }
+            return d;
+          });
+        });
+      else if (id === 'delete')
+        setSelection((sel) => {
+          if (sel.size > 0) runCommand(deleteByIds(sel));
+          return new Set();
+        });
       else if (TX[id])
         setSelection((sel) => {
           if (sel.size > 0) runCommand(transformItems(sel, TX[id]!));
@@ -861,11 +882,6 @@ export function SchematicEditor({
         });
     },
     [undo, redo, save, promptOpen, runCommand, runErcNow, onShowPcb, onShowSymbolEditor],
-  );
-
-  const menus = useMemo(
-    () => buildMenus({ tool: onToolSelect, action: onTopAction }),
-    [onToolSelect, onTopAction],
   );
 
   const onLeftToggle = useCallback((id: string) => {
@@ -898,6 +914,15 @@ export function SchematicEditor({
     });
   }, []);
 
+  const menus = useMemo(
+    () =>
+      buildMenus(
+        { tool: onToolSelect, action: onTopAction, toggle: onLeftToggle },
+        { toggleHiddenPins: es.appearance.show_hidden_pins },
+      ),
+    [onToolSelect, onTopAction, onLeftToggle, es.appearance.show_hidden_pins],
+  );
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // While a modal properties dialog is open, only Escape acts on the editor.
@@ -921,6 +946,10 @@ export function SchematicEditor({
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
         e.preventDefault();
         duplicateSelection();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
+        // SCH_ACTIONS::placeGlobalLabel default hotkey (Ctrl+L).
+        e.preventDefault();
+        onToolSelect('placeGlobalLabel');
       } else if (e.key === 'Escape') {
         if (propsTarget !== null) setPropsTarget(null);
         else if (pastePending) setPastePending(null);
