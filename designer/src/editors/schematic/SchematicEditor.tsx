@@ -13,6 +13,7 @@ import {
   editSymbolProperties,
   copySelectionText,
   parsePastedText,
+  boxSelect,
   runErc,
   buildSheetTree,
   sheetFile,
@@ -961,6 +962,37 @@ export function SchematicEditor({
         // SCH_ACTIONS::placeGlobalLabel default hotkey (Ctrl+L).
         e.preventDefault();
         onToolSelect('placeGlobalLabel');
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !isTyping()) {
+        // ACTIONS::selectAll / unselectAll (Ctrl+A / Ctrl+Shift+A). Select-all
+        // is a greedy box select over the whole plane.
+        e.preventDefault();
+        if (e.shiftKey) setSelection(new Set());
+        else
+          setDoc((d) => {
+            if (d)
+              setSelection(boxSelect(d, libById, { x: 1e15, y: 1e15 }, { x: -1e15, y: -1e15 }));
+            return d;
+          });
+      } else if ((e.ctrlKey || e.metaKey) && e.key === '0') {
+        // ACTIONS::zoomFitScreen (Ctrl+0).
+        e.preventDefault();
+        controller.current?.zoomToFit();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'Home') {
+        // ACTIONS::zoomFitObjects (Ctrl+Home).
+        e.preventDefault();
+        controller.current?.zoomToFit();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '=')) {
+        // ACTIONS::zoomIn (Ctrl++).
+        e.preventDefault();
+        controller.current?.zoomIn();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === '-') {
+        // ACTIONS::zoomOut (Ctrl+-).
+        e.preventDefault();
+        controller.current?.zoomOut();
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'g') {
+        // ACTIONS::toggleGridOverrides (Ctrl+Shift+G).
+        e.preventDefault();
+        onLeftToggle('toggleGridOverrides');
       } else if (e.key === 'Escape') {
         if (propsTarget !== null) setPropsTarget(null);
         else if (pastePending) setPastePending(null);
@@ -991,6 +1023,46 @@ export function SchematicEditor({
             tgt.tagName === 'SELECT' ||
             tgt.isContentEditable);
         if (typing) return;
+        // R / Shift+R / X / Y — rotate & mirror the selection
+        // (SCH_ACTIONS::rotateCCW/rotateCW/mirrorH/mirrorV default hotkeys).
+        const txKey =
+          e.key.toLowerCase() === 'r'
+            ? e.shiftKey
+              ? 'rotateCW'
+              : 'rotateCCW'
+            : e.key.toLowerCase() === 'x'
+              ? 'mirrorH'
+              : e.key.toLowerCase() === 'y'
+                ? 'mirrorV'
+                : null;
+        if (txKey) {
+          e.preventDefault();
+          onTopAction(txKey);
+          return;
+        }
+        // ` = Highlight Net tool, ~ = clear highlighting
+        // (SCH_ACTIONS::highlightNet / clearHighlight).
+        if (e.key === '`') {
+          e.preventDefault();
+          setActiveTool('highlightNet');
+          return;
+        }
+        if (e.key === '~') {
+          e.preventDefault();
+          setHighlightItem(null);
+          return;
+        }
+        // N / Shift+N — next/previous grid (ACTIONS::gridNext/gridPrev).
+        if (e.key.toLowerCase() === 'n') {
+          e.preventDefault();
+          settings.updateEeschema((s) => {
+            const n = s.window.grid.sizes.length;
+            if (n > 0)
+              s.window.grid.last_size_idx =
+                (s.window.grid.last_size_idx + (e.shiftKey ? n - 1 : 1)) % n;
+          });
+          return;
+        }
         // E = Properties (KiCad SCH_ACTIONS::properties) on a single selected symbol.
         if (e.key.toLowerCase() === 'e' && selection.size === 1) {
           const id = [...selection][0]!;
@@ -1021,6 +1093,9 @@ export function SchematicEditor({
     runCommand,
     activeTool,
     onToolSelect,
+    onTopAction,
+    onLeftToggle,
+    libById,
     pendingLabel,
     propsTarget,
     pastePending,
