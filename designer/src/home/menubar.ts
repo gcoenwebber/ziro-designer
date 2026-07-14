@@ -8,6 +8,7 @@
 
 import type { Menu, MenuItem } from '../ui/MenuBar.js';
 import type { ProjectMeta } from './projectStore.js';
+import type { DemoMeta } from './demos.js';
 
 const SEP: MenuItem = { sep: true };
 
@@ -29,9 +30,11 @@ export interface ManagerMenuHandlers {
   editFootprints: () => void;
   openPreferences: () => void;
   showAbout: () => void;
+  openDemo: (id: string) => void;
   hasProject: boolean;
   hasTextFileSelected: boolean;
   recent: readonly ProjectMeta[];
+  demos: readonly DemoMeta[];
 }
 
 /** kicad/menubar.cpp: the Import Non-KiCad Project submenu, verbatim.
@@ -45,6 +48,18 @@ const IMPORT_SUBMENU: MenuItem[] = [
   { label: 'PADS Project…', disabled: true },
   { label: 'gEDA / Lepton EDA Project…', disabled: true },
 ];
+
+/** The bundled demos as a submenu; simulation examples group under their own
+ * flyout so the list stays scannable (32 demos ship today). */
+function buildDemoSubmenu(h: ManagerMenuHandlers): MenuItem[] {
+  if (h.demos.length === 0) return [{ label: '(no demos bundled)', disabled: true }];
+  const entry = (d: DemoMeta): MenuItem => ({ label: d.title, action: () => h.openDemo(d.id) });
+  const sims = h.demos.filter((d) => d.id.startsWith('simulation/'));
+  const rest = h.demos.filter((d) => !d.id.startsWith('simulation/'));
+  const items: MenuItem[] = rest.map(entry);
+  if (sims.length > 0) items.push({ label: 'Simulation', submenu: sims.map(entry) });
+  return items;
+}
 
 export function buildManagerMenus(h: ManagerMenuHandlers): Menu[] {
   // File > Open Recent — KiCad's FILE_HISTORY menu, fed from our project store.
@@ -64,6 +79,12 @@ export function buildManagerMenus(h: ManagerMenuHandlers): Menu[] {
         { label: 'New Project…', shortcut: 'Ctrl+N', action: h.newProject },
         // "Clone Project from Repository…" is git-gated upstream and hidden
         // when git is off — omitted until version control lands.
+        // Upstream shows this only when the stock demos path exists; ours
+        // lists the bundled demos as a submenu (the web take on its picker).
+        {
+          label: 'Open Demo Project',
+          submenu: buildDemoSubmenu(h),
+        },
         { label: 'Open Project…', icon: 'open', shortcut: 'Ctrl+O', action: h.openProject },
         // Web-only: fallback when the browser blocks the folder picker.
         { label: 'Select Project Files…', action: h.selectProjectFiles },

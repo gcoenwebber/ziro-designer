@@ -13,6 +13,7 @@ import { useAuth } from '../auth/AuthProvider.js';
 import { syncAllProjects, pushProject, deleteCloudProject } from '../cloud/sync.js';
 import { LoadingOverlay, nextPaint } from '../ui/LoadingOverlay.js';
 import { loadTemplates, createFromTemplate, type TemplateMeta } from './templates.js';
+import { loadDemos, openDemo, type DemoMeta } from './demos.js';
 import '../ui/shell.css';
 import type { PickedHomeFile } from './files.js';
 import {
@@ -138,9 +139,9 @@ const tileIcon = (id: string): JSX.Element => {
 
 /**
  * KiCad-style project manager: open a project folder, see its files in the
- * tree, then launch the Schematic Editor on it — the same workflow as the
- * desktop app's project window. Until a project is opened, the bundled demo
- * project is shown.
+ * tree, then launch an editor on it — the same workflow as the desktop app's
+ * project window. Until a project is opened, the tree shows open/select/drop
+ * hints; bundled demos are under File > Open Demo Project.
  */
 export function HomePage({
   onOpenSchematic,
@@ -196,6 +197,21 @@ export function HomePage({
   useEffect(() => {
     void loadTemplates().then(setTemplates);
   }, []);
+  // Bundled demo projects (File > Open Demo Project).
+  const [demos, setDemos] = useState<DemoMeta[]>([]);
+  useEffect(() => {
+    void loadDemos().then(setDemos);
+  }, []);
+  const openDemoProject = async (id: string): Promise<void> => {
+    const d = demos.find((x) => x.id === id);
+    if (!d) return;
+    // Demos open as themselves and are not persisted over an existing store
+    // entry unless the user saves — mirror a plain folder open (persist like
+    // any opened project so it lands in Recent).
+    const files = await openDemo(d);
+    if (files.length === 0) return;
+    await ingest(files.map((f) => ({ name: f.name, bytesOf: async () => f.bytes! })));
+  };
   // Project-tree pane width (px), draggable like KiCad's wxAUI sash.
   const [panelWidth, setPanelWidth] = useState(290);
   // Non-null while opening/saving a project — drives KiCad's "Load Schematic"
@@ -588,9 +604,11 @@ export function HomePage({
     editFootprints: () => onOpenFootprintEditor?.(picked ?? undefined),
     openPreferences: () => setPrefsOpen(true),
     showAbout: () => setAboutOpen(true),
+    openDemo: (id) => void openDemoProject(id),
     hasProject: !!picked,
     hasTextFileSelected: !!selectedTextFile,
     recent: saved,
+    demos,
   });
 
   // Manager hotkeys, matching the upstream defaults (Ctrl+N/O/E/L/P/F). F5 is
