@@ -409,7 +409,13 @@ function writeSheet(sh: SchSheet): SList {
 }
 
 function writeLabel(l: SchLabel): SList {
-  return patchAt(setItem(l.source, 1, str(l.text)), l.at);
+  let node = patchAt(setItem(l.source, 1, str(l.text)), l.at);
+  // Global/hierarchical labels carry a `(shape …)`; patch it in place when
+  // present so a shape edit round-trips (local labels/text have no shape).
+  if (l.shape !== undefined && childNamed(node, 'shape')) {
+    node = mapChild(node, 'shape', () => list(atom('shape'), atom(l.shape!)));
+  }
+  return node;
 }
 
 /** Patch a text box: content (item 1), position (`at` = start) and `(size ..)`. */

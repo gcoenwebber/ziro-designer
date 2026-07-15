@@ -177,6 +177,19 @@ function removeSymbolCmd(lib: LibSymbol, sym: SchSymbol, keepLib: boolean): Edit
   };
 }
 
+/** Replace the label at `index` with `next` (e.g. after editing its text/shape). */
+export function replaceLabel(index: number, next: SchLabel): EditCommand {
+  return {
+    label: 'Edit Label',
+    apply(doc: Schematic): Schematic {
+      return { ...doc, labels: doc.labels.map((l, i) => (i === index ? next : l)) };
+    },
+    invert(before: Schematic): EditCommand {
+      return replaceLabel(index, before.labels[index]!);
+    },
+  };
+}
+
 /** Replace the sheet at `index` with `next` (e.g. after adding a sheet pin). */
 export function replaceSheet(index: number, next: SchSheet): EditCommand {
   return {

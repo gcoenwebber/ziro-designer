@@ -31,6 +31,7 @@ import {
   replaceSheet,
   replaceTextBox,
   replaceTable,
+  replaceLabel,
   makeImage,
   makeTextBox,
   makeTable,
@@ -226,6 +227,13 @@ export function SchematicEditor({
     texts: string[];
   } | null>(null);
   const [pendingImage, setPendingImage] = useState<{ data: string } | null>(null);
+  // Editing an existing label's text/shape (DIALOG_LABEL_PROPERTIES).
+  const [labelEdit, setLabelEdit] = useState<{
+    index: number;
+    kind: LabelKind;
+    text: string;
+    shape?: LabelShape;
+  } | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const [localToggles, setLocalToggles] = useState<Set<string>>(new Set(DEFAULT_TOGGLES));
   const [prefsOpen, setPrefsOpen] = useState(false);
@@ -670,6 +678,13 @@ export function SchematicEditor({
         | 'table',
     ) => {
       if (kind === 'symbol') setPropsTarget(id);
+      if (kind === 'label' && doc) {
+        const idx = doc.labels.findIndex((l, i) => refId('label', l.uuid, i) === id);
+        if (idx !== -1) {
+          const l = doc.labels[idx]!;
+          setLabelEdit({ index: idx, kind: l.kind, text: l.text, shape: l.shape });
+        }
+      }
       if (kind === 'textbox' && doc) {
         const idx = doc.textBoxes.findIndex((tb, i) => refId('textbox', tb.uuid, i) === id);
         if (idx !== -1) {
@@ -953,6 +968,21 @@ export function SchematicEditor({
       return null;
     });
   }, [doc, runCommand]);
+
+  const commitLabelEdit = useCallback(
+    (text: string, shape: LabelShape) => {
+      setLabelEdit((le) => {
+        if (!le || !doc) return null;
+        const orig = doc.labels[le.index];
+        if (orig && (orig.text !== text || (le.shape !== undefined && orig.shape !== shape))) {
+          const next = le.shape !== undefined ? { ...orig, text, shape } : { ...orig, text };
+          runCommand(replaceLabel(le.index, next));
+        }
+        return null;
+      });
+    },
+    [doc, runCommand],
+  );
 
   const onImagePlaced = useCallback(
     (at: Vec2) => {
@@ -1262,13 +1292,25 @@ export function SchematicEditor({
           });
           return;
         }
-        // E = Properties (KiCad SCH_ACTIONS::properties) on a single selected symbol.
+        // E = Properties (KiCad SCH_ACTIONS::properties) on a single selected
+        // item: symbols open the full dialog, labels/text and text boxes/tables
+        // open their editors (onEditItem routes by item kind).
         if (e.key.toLowerCase() === 'e' && selection.size === 1) {
           const id = [...selection][0]!;
           setDoc((d) => {
-            if (d?.symbols.some((s, i) => refId('symbol', s.uuid, i) === id)) {
+            if (!d) return d;
+            if (d.symbols.some((s, i) => refId('symbol', s.uuid, i) === id)) {
               e.preventDefault();
               setPropsTarget(id);
+            } else if (d.labels.some((l, i) => refId('label', l.uuid, i) === id)) {
+              e.preventDefault();
+              onEditItem(id, 'label');
+            } else if (d.textBoxes.some((tb, i) => refId('textbox', tb.uuid, i) === id)) {
+              e.preventDefault();
+              onEditItem(id, 'textbox');
+            } else if (d.tables.some((t, i) => refId('table', t.uuid, i) === id)) {
+              e.preventDefault();
+              onEditItem(id, 'table');
             }
             return d;
           });
@@ -1303,6 +1345,7 @@ export function SchematicEditor({
     searchData,
     doFind,
     openFindDialog,
+    onEditItem,
   ]);
 
   const units = toggles.has('unitsInches') ? 'in' : toggles.has('unitsMils') ? 'mils' : 'mm';
@@ -1589,13 +1632,24 @@ export function SchematicEditor({
       )}
 
       {/* Label tools: a properties dialog names the label, then it follows the cursor. */}
-      {LABEL_TOOL_KINDS[activeTool] && !pendingLabel && (
+      {LABEL_TOOL_KINDS[activeTool] && !pendingLabel && !labelEdit && (
         <LabelDialog
           kind={LABEL_TOOL_KINDS[activeTool]!}
           onOk={(text: string, shape: LabelShape) =>
             setPendingLabel({ kind: LABEL_TOOL_KINDS[activeTool]!, text, shape })
           }
           onCancel={() => setActiveTool('select')}
+        />
+      )}
+
+      {/* Editing an existing label/text (Properties): same dialog, pre-filled. */}
+      {labelEdit && (
+        <LabelDialog
+          kind={labelEdit.kind}
+          initialText={labelEdit.text}
+          initialShape={labelEdit.shape}
+          onOk={commitLabelEdit}
+          onCancel={() => setLabelEdit(null)}
         />
       )}
 
