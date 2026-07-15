@@ -662,6 +662,41 @@ body {
   color: #8a8c90;
   font-size: 12px;
 }
+
+/* Annotate Schematic dialog (DIALOG_ANNOTATE). */
+.ze-annotate-dialog {
+  width: 380px;
+}
+.ze-annotate-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ze-annotate-body fieldset {
+  border: 1px solid var(--chrome-border);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ze-annotate-body legend {
+  padding: 0 4px;
+  color: #8a8c90;
+  font-size: 12px;
+}
+.ze-annotate-body label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.ze-annotate-body label.disabled {
+  opacity: 0.4;
+}
+.ze-annotate-body .start-num {
+  width: 70px;
+  margin-left: 6px;
+}
 .ze-mitem .mcheck {
   font-size: 12px;
   line-height: 1;

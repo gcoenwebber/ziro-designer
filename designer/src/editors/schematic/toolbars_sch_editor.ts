@@ -55,7 +55,7 @@ export const TOP_TOOLBAR: ToolEntry[] = [
   { id: 'symbolBrowser', icon: 'symbolBrowser', title: 'Symbol Library Browser', disabled: true },
   { id: 'footprintEditor', icon: 'footprintEditor', title: 'Footprint Editor', disabled: true },
   sep,
-  { id: 'annotate', icon: 'annotate', title: 'Annotate Schematic...', disabled: true },
+  { id: 'annotate', icon: 'annotate', title: 'Annotate Schematic...' },
   { id: 'erc', icon: 'erc', title: 'Electrical Rules Checker' },
   { id: 'simulator', icon: 'simulator', title: 'Simulator', disabled: true },
   { id: 'assignFootprints', icon: 'assignFp', title: 'Assign Footprints...', disabled: true },

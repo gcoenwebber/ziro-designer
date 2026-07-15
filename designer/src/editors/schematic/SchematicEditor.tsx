@@ -17,7 +17,10 @@ import {
   findMatches,
   replaceCommand,
   defaultSearchData,
+  annotateCommand,
+  clearAnnotationCommand,
   type SchSearchData,
+  type AnnotateOptions,
   runErc,
   buildSheetTree,
   sheetFile,
@@ -65,6 +68,7 @@ import {
   type SheetRef,
 } from './sch_navigate_tool.js';
 import { DialogSchematicFind } from './dialogs/dialog_schematic_find.js';
+import { DialogAnnotate } from './dialogs/dialog_annotate.js';
 import { LoadingOverlay, nextPaint } from '../../ui/LoadingOverlay.js';
 import { PreferencesDialog } from '../../prefs/PreferencesDialog.js';
 import { settings, gridSizeToIU } from '../../prefs/settings.js';
@@ -386,6 +390,22 @@ export function SchematicEditor({
     // Replace mode excludes reference designators from matches unless opted in.
     setSearchData((d) => ({ ...d, searchAndReplace: mode === 'replace' }));
   }, []);
+
+  // Annotate Schematic (SCH_EDIT_FRAME::AnnotateSymbols) dialog.
+  const [annotateOpen, setAnnotateOpen] = useState(false);
+  const runAnnotate = useCallback(
+    (opts: AnnotateOptions) => {
+      runCommand(annotateCommand(libById, opts, selection));
+      setAnnotateOpen(false);
+    },
+    [runCommand, libById, selection],
+  );
+  const runClearAnnotation = useCallback(
+    (scope: AnnotateOptions['scope']) => {
+      runCommand(clearAnnotationCommand(scope, selection));
+    },
+    [runCommand, selection],
+  );
   useEffect(() => {
     // Changed search settings restart the scan (upstream m_foundItemHighlight reset).
     findCursor.current = -1;
@@ -980,6 +1000,7 @@ export function SchematicEditor({
       else if (id === 'close') onExitToHome();
       else if (id === 'find') openFindDialog('find');
       else if (id === 'findReplace') openFindDialog('replace');
+      else if (id === 'annotate') setAnnotateOpen(true);
       // Hierarchy navigation (SCH_NAVIGATE_TOOL). Back/Forward move the history
       // cursor without pushing; Up and Previous/Next go through changeSheet.
       else if (id === 'navBack' || id === 'navFwd') {
@@ -1493,6 +1514,14 @@ export function SchematicEditor({
               replace={findOpen === 'replace'}
               onReplace={doReplaceNext}
               onReplaceAll={doReplaceAll}
+            />
+          )}
+          {annotateOpen && (
+            <DialogAnnotate
+              hasSelection={selection.size > 0}
+              onAnnotate={runAnnotate}
+              onClear={runClearAnnotation}
+              onClose={() => setAnnotateOpen(false)}
             />
           )}
         </div>
