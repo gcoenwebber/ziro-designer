@@ -129,7 +129,13 @@ describe('microstrip', () => {
 });
 
 describe('coplanar waveguide', () => {
-  const phys = { widthM: 0.5e-3, gapM: 0.3e-3, heightM: 1.6e-3, lengthM: 0.05 };
+  const phys = {
+    widthM: 0.5e-3,
+    gapM: 0.3e-3,
+    heightM: 1.6e-3,
+    thicknessM: 0.035e-3,
+    lengthM: 0.05,
+  };
 
   it('gives plausible Z0 and εeff (no ground)', () => {
     const r = coplanarAnalyze(phys, el, false);
@@ -137,18 +143,30 @@ describe('coplanar waveguide', () => {
     expect(r.z0).toBeLessThan(120);
     expect(r.epsEff).toBeGreaterThan(1);
     expect(r.epsEff).toBeLessThan(el.epsilonR);
+    // Finite thickness ⇒ non-zero conductor loss.
+    expect(r.conductorLossDb).toBeGreaterThan(0);
+    expect(r.dielectricLossDb).toBeGreaterThan(0);
   });
 
-  it('bottom ground lowers the impedance', () => {
-    const cpw = coplanarAnalyze(phys, el, false);
-    const gcpw = coplanarAnalyze(phys, el, true);
+  it('bottom ground lowers the impedance (zero-thickness limit)', () => {
+    // With finite thickness KiCad's per-branch correction can cross the two over;
+    // the pure conformal result (T=0) has the ground plane adding capacitance.
+    const thin = { ...phys, thicknessM: 0 };
+    const cpw = coplanarAnalyze(thin, el, false);
+    const gcpw = coplanarAnalyze(thin, el, true);
     expect(gcpw.z0).toBeLessThan(cpw.z0);
   });
 
-  it('synthesis solves the gap', () => {
+  it('synthesis solves the gap (round-trip)', () => {
     const syn = coplanarSynthesize(phys, el, false, 70, 90)!;
     expect(syn).not.toBeNull();
     expect(coplanarAnalyze(syn, el, false).z0).toBeCloseTo(70, 2);
+  });
+
+  it('grounded synthesis round-trips too', () => {
+    const syn = coplanarSynthesize(phys, el, true, 90, 90)!;
+    expect(syn).not.toBeNull();
+    expect(coplanarAnalyze(syn, el, true).z0).toBeCloseTo(90, 2);
   });
 });
 

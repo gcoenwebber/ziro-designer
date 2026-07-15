@@ -44,3 +44,54 @@ export function unitPropagationDelay(epsilonEff: number): number {
 
 export const radToDeg = (rad: number): number => (rad * 180) / Math.PI;
 export const degToRad = (deg: number): number => (deg * Math.PI) / 180;
+
+/**
+ * Complete elliptic integrals of the first (K) and second (E) kind, computed by
+ * the arithmetic-geometric mean, faithful to KiCad's
+ * `TRANSLINE_CALCULATION_BASE::EllipticIntegral`. `arg` is the modulus squared
+ * (m = k²). Returns `[K, E]`.
+ */
+export function ellipticIntegral(arg: number): [number, number] {
+  const NR_EPSI = 2.2204460492503131e-16;
+  const iMax = 16;
+
+  if (arg === 1.0) return [Number.POSITIVE_INFINITY, 0];
+  if (arg === Number.NEGATIVE_INFINITY) return [0, Number.POSITIVE_INFINITY];
+
+  let fk = 1;
+  let fe = 1;
+  let da = arg;
+  if (arg < 0) {
+    fk = 1 / Math.sqrt(1 - arg);
+    fe = Math.sqrt(1 - arg);
+    da = -arg / (1 - arg);
+  }
+
+  let a = 1;
+  let b = Math.sqrt(1 - da);
+  let c = Math.sqrt(da);
+  let fr = 0.5;
+  let s = fr * c * c;
+  let i = 0;
+  for (; i < iMax; i++) {
+    const t = (a + b) / 2;
+    c = (a - b) / 2;
+    b = Math.sqrt(a * b);
+    a = t;
+    fr *= 2;
+    s += fr * c * c;
+    if (c / a < NR_EPSI) break;
+  }
+
+  if (i >= iMax) return [0, 0];
+  let k = Math.PI / 2 / a;
+  let e = ((Math.PI / 2) * (1 - s)) / a;
+  if (arg < 0) {
+    k *= fk;
+    e *= fe;
+  }
+  return [k, e];
+}
+
+/** K(k) for a modulus k (not k²), matching KiCad's `EllipticIntegral(k).first`. */
+export const ellipticK = (k: number): number => ellipticIntegral(k * k)[0];

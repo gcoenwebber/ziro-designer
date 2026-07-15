@@ -77,12 +77,14 @@ const PHYS_FIELDS: Record<LineType, PhysField[]> = {
     L('w', 'Trace width (W):', 0.5),
     L('s', 'Gap width (S):', 0.3),
     L('h', 'Substrate height (H):', 1.6),
+    L('t', 'Trace thickness (T):', 0.035, 'µm'),
     L('l', 'Line length (L):', 50),
   ],
   gcpw: [
     L('w', 'Trace width (W):', 0.5),
     L('s', 'Gap width (S):', 0.3),
     L('h', 'Substrate height (H):', 1.6),
+    L('t', 'Trace thickness (T):', 0.035, 'µm'),
     L('l', 'Line length (L):', 50),
   ],
   rectwaveguide: [
@@ -171,7 +173,7 @@ export function PanelTransline(): JSX.Element {
         case 'cpw':
         case 'gcpw':
           r = coplanarAnalyze(
-            { widthM: v('w'), gapM: v('s'), heightM: v('h'), lengthM: v('l') },
+            { widthM: v('w'), gapM: v('s'), heightM: v('h'), thicknessM: v('t'), lengthM: v('l') },
             e,
             type === 'gcpw',
           );
@@ -239,7 +241,7 @@ export function PanelTransline(): JSX.Element {
       case 'cpw':
       case 'gcpw': {
         const s = coplanarSynthesize(
-          { widthM: v('w'), gapM: v('s'), heightM: v('h'), lengthM: v('l') },
+          { widthM: v('w'), gapM: v('s'), heightM: v('h'), thicknessM: v('t'), lengthM: v('l') },
           e,
           type === 'gcpw',
           zTarget,
