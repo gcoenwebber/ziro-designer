@@ -105,70 +105,86 @@ export interface RegulatorResult {
   error?: string;
 }
 
-const voutOf = (vref: number, iadj: number, r1: number, r2: number): number =>
-  vref * ((r1 + r2) / r1) + iadj * r2;
-
-const r1Of = (vref: number, iadj: number, vout: number, r2: number): number =>
-  (vref * r2) / (vout - vref - iadj * r2);
-
-const r2Of = (vref: number, iadj: number, vout: number, r1: number): number =>
-  ((vout - vref) * r1) / (vref + iadj * r1);
-
 /**
- * Solve the divider, then sweep every worst-case corner (Vref, Iadj, both
- * resistor tolerances) for the min/typ/max columns shown on the panel.
+ * Solve the divider and compute the min/typ/max columns, using KiCad's exact
+ * per-type equations and worst-case corners:
+ *   3-terminal: Vout = Vref·(R1+R2)/R1 + Iadj·R2
+ *   standard:   Vout = Vref·(R1+R2)/R2
+ * (`solve` picks which of R1/R2/Vout is derived from the other two typicals.)
  */
 export function solveRegulator(p: RegulatorParams): RegulatorResult {
-  const iadjTyp = p.type === RegulatorType.STANDARD ? 0 : p.iadjTyp;
-  const iadjMax = p.type === RegulatorType.STANDARD ? 0 : p.iadjMax;
-  const iadjMin = 0; // datasheets specify typ/max only; worst-case low is 0
-
   let r1 = p.r1Typ;
   let r2 = p.r2Typ;
   let vout = p.voutTyp;
+  const { vrefMin, vrefTyp, vrefMax, resTolPct } = p;
+  const restol = resTolPct / 100;
 
-  if (p.solve === RegulatorSolve.R1) r1 = r1Of(p.vrefTyp, iadjTyp, vout, r2);
-  else if (p.solve === RegulatorSolve.R2) r2 = r2Of(p.vrefTyp, iadjTyp, vout, r1);
-  else vout = voutOf(p.vrefTyp, iadjTyp, r1, r2);
+  const fail = (msg: string): RegulatorResult => ({
+    r1: nan3(),
+    r2: nan3(),
+    vout: nan3(),
+    tolNegPct: NaN,
+    tolPosPct: NaN,
+    error: msg,
+  });
 
-  const bad = (v: number): boolean => !Number.isFinite(v) || v <= 0;
-  if (bad(r1) || bad(r2) || bad(vout)) {
-    return {
-      r1: nan3(),
-      r2: nan3(),
-      vout: nan3(),
-      tolNegPct: NaN,
-      tolPosPct: NaN,
-      error:
-        p.solve === RegulatorSolve.R1
-          ? 'No solution: Vout must exceed Vref (check R2 / Iadj).'
-          : p.solve === RegulatorSolve.R2
-            ? 'No solution: Vout must exceed Vref.'
-            : 'Invalid input values.',
-    };
-  }
+  if (!(vrefTyp > 0)) return fail('Vref must be greater than 0.');
+  if (!(vrefMin <= vrefTyp && vrefTyp <= vrefMax))
+    return fail('Vref must satisfy VrefMin ≤ VrefTyp ≤ VrefMax.');
 
-  const tol = p.resTolPct / 100;
-  let vMin = Infinity;
-  let vMax = -Infinity;
-  for (const vref of [p.vrefMin, p.vrefMax]) {
-    for (const iadj of [iadjMin, iadjMax]) {
-      for (const kr1 of [1 - tol, 1 + tol]) {
-        for (const kr2 of [1 - tol, 1 + tol]) {
-          const v = voutOf(vref, iadj, r1 * kr1, r2 * kr2);
-          if (v < vMin) vMin = v;
-          if (v > vMax) vMax = v;
-        }
-      }
+  let voutMin: number;
+  let voutMax: number;
+
+  if (p.type === RegulatorType.THREE_TERMINAL) {
+    const iadjTyp = p.iadjTyp;
+    const iadjMax = p.iadjMax;
+    if (!(iadjTyp <= iadjMax)) return fail('Iadj must satisfy IadjTyp ≤ IadjMax.');
+
+    if (p.solve === RegulatorSolve.R1) {
+      const denom = vout - vrefTyp - r2 * iadjTyp;
+      if (!(denom > 0)) return fail('Vout must be greater than Vref.');
+      r1 = (vrefTyp * r2) / denom;
+    } else if (p.solve === RegulatorSolve.R2) {
+      r2 = (vout - vrefTyp) / (iadjTyp + vrefTyp / r1);
+    } else {
+      vout = (vrefTyp * (r1 + r2)) / r1 + r2 * iadjTyp;
     }
+    if (!(r1 > 0) || !(r2 > 0) || !(vout > 0)) return fail('No valid solution for these values.');
+
+    const r1min = r1 - r1 * restol;
+    const r1max = r1 + r1 * restol;
+    const r2min = r2 - r2 * restol;
+    const r2max = r2 + r2 * restol;
+    voutMin = (vrefMin * (r1max + r2min)) / r1max + r2min * iadjTyp;
+    voutMax = (vrefMax * (r1min + r2max)) / r1min + r2max * iadjMax;
+  } else {
+    // Standard type: Vout = Vref·(R1+R2)/R2, no Iadj.
+    if (p.solve === RegulatorSolve.R1) {
+      r1 = (vout / vrefTyp - 1) * r2;
+    } else if (p.solve === RegulatorSolve.R2) {
+      const k = vout / vrefTyp - 1;
+      if (!(k > 0)) return fail('Vout must be greater than Vref.');
+      r2 = r1 / k;
+    } else {
+      vout = (vrefTyp * (r1 + r2)) / r2;
+    }
+    if (!(r1 > 0) || !(r2 > 0) || !(vout > 0)) return fail('No valid solution for these values.');
+
+    const r1min = r1 - r1 * restol;
+    const r1max = r1 + r1 * restol;
+    const r2min = r2 - r2 * restol;
+    const r2max = r2 + r2 * restol;
+    voutMin = (vrefMin * (r1min + r2max)) / r2max;
+    voutMax = (vrefMax * (r1max + r2min)) / r2min;
   }
 
   return {
-    r1: { min: r1 * (1 - tol), typ: r1, max: r1 * (1 + tol) },
-    r2: { min: r2 * (1 - tol), typ: r2, max: r2 * (1 + tol) },
-    vout: { min: vMin, typ: vout, max: vMax },
-    tolNegPct: ((vMin - vout) / vout) * 100,
-    tolPosPct: ((vMax - vout) / vout) * 100,
+    r1: { min: r1 - r1 * restol, typ: r1, max: r1 + r1 * restol },
+    r2: { min: r2 - r2 * restol, typ: r2, max: r2 + r2 * restol },
+    vout: { min: voutMin, typ: vout, max: voutMax },
+    // KiCad's normalization: min vs typ, max vs itself.
+    tolNegPct: ((voutMin - vout) / vout) * 100,
+    tolPosPct: ((voutMax - vout) / voutMax) * 100,
   };
 }
 

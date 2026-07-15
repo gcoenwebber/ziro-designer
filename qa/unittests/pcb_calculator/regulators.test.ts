@@ -64,12 +64,12 @@ describe('regulator calculator', () => {
     expect(back.vout.typ).toBeCloseTo(5, 9);
   });
 
-  it('standard type ignores Iadj', () => {
+  it('standard type uses Vout = Vref·(R1+R2)/R2 and ignores Iadj', () => {
     const r = solveRegulator({
       type: RegulatorType.STANDARD,
       solve: RegulatorSolve.VOUT,
-      r1Typ: 1000,
-      r2Typ: 3000,
+      r1Typ: 3000,
+      r2Typ: 1000,
       voutTyp: 0,
       vrefMin: 1.2,
       vrefTyp: 1.25,
@@ -78,7 +78,36 @@ describe('regulator calculator', () => {
       iadjMax: 100e-6,
       resTolPct: 0,
     });
+    // 1.25 · (3000+1000) / 1000 = 5
     expect(r.vout.typ).toBeCloseTo(5, 9);
+  });
+
+  it('standard type solves R1 and R2 back (Vref·(R1+R2)/R2)', () => {
+    const std = {
+      type: RegulatorType.STANDARD,
+      vrefMin: 1.2,
+      vrefTyp: 1.25,
+      vrefMax: 1.3,
+      iadjTyp: 0,
+      iadjMax: 0,
+      resTolPct: 0,
+    };
+    const r1 = solveRegulator({
+      ...std,
+      solve: RegulatorSolve.R1,
+      r1Typ: 0,
+      r2Typ: 1000,
+      voutTyp: 5,
+    });
+    expect(r1.r1.typ).toBeCloseTo(3000, 6);
+    const r2 = solveRegulator({
+      ...std,
+      solve: RegulatorSolve.R2,
+      r1Typ: 3000,
+      r2Typ: 0,
+      voutTyp: 5,
+    });
+    expect(r2.r2.typ).toBeCloseTo(1000, 6);
   });
 
   it('flags impossible targets', () => {

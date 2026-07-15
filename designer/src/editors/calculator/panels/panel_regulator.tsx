@@ -359,7 +359,7 @@ export function PanelRegulator(): JSX.Element {
             <div className="calc-formula">
               {type === RegulatorType.THREE_TERMINAL
                 ? 'Vout = Vref * (R1 + R2) / R1 + Iadj * R2'
-                : 'Vout = Vref * (R1 + R2) / R1'}
+                : 'Vout = Vref * (R1 + R2) / R2'}
             </div>
           </Group>
         </div>
