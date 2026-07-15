@@ -1,19 +1,21 @@
 /**
- * Coaxial line analysis/synthesis.
- * Counterpart: KiCad `pcb_calculator/transline/coax.cpp`.
- *
- * Z0 = η0 / (2π√εr) · ln(D/d); TE11 cutoff fc ≈ c / (π·(D+d)/2·√εr).
+ * Coaxial line — faithful port of KiCad's `transline_calculations/coax.cpp`
+ * (Pozar, "Microwave Engineering" 4th ed. §2.2, §3.5). TEM Z0, electrical
+ * length, dielectric/conductor loss and higher-order TE/TM mode cut-offs.
+ * Counterpart: KiCad `common/transline_calculations/coax.cpp`.
  */
 
 import {
-  type TranslineAnalysis,
-  type TranslineElectrical,
   C0,
-  ETA0,
-  electricalLengthDeg,
-  physicalLengthM,
+  LOG2DB,
+  type TcElectrical,
+  ZF0,
+  degToRad,
+  radToDeg,
   skinDepth,
-} from './transline.js';
+  surfaceResistance,
+} from './tc_common.js';
+import type { TranslineAnalysis } from './transline.js';
 
 export interface CoaxPhysical {
   /** Inner conductor diameter, m. */
@@ -26,46 +28,93 @@ export interface CoaxPhysical {
 
 export interface CoaxResult extends TranslineAnalysis {
   extra: { te11CutoffHz: number };
+  /** Propagating TE modes (KiCad "H(1,1) …"), or "none". */
+  teModes: string;
+  /** Propagating TM modes (KiCad "E(0,1) …"), or "none". */
+  tmModes: string;
 }
 
-export function coaxAnalyze(phys: CoaxPhysical, el: TranslineElectrical): CoaxResult {
-  const { innerDiaM: d, outerDiaM: D, lengthM: len } = phys;
-  const er = el.epsilonR;
-  const z0 = (ETA0 / (2 * Math.PI * Math.sqrt(er))) * Math.log(D / d);
-  const epsEff = er;
+/** Higher-order mode lists (KiCad UpdateModeCutoffs). */
+function modeCutoffs(
+  din: number,
+  dout: number,
+  epsr: number,
+  mur: number,
+  freq: number,
+): { te11: number; te: string; tm: string } {
+  const sqrtMuEr = Math.sqrt(epsr * mur);
+  const fcTE11 = (2.0 * C0) / (Math.PI * sqrtMuEr * (din + dout));
+  const fcStep = C0 / (sqrtMuEr * (dout - din));
 
-  const delta = skinDepth(el.frequencyHz, el.sigma, el.murC);
-  const rs = 1 / (el.sigma * delta);
-  // αc = Rs/(2·η)·(1/a + 1/b)/ln(b/a), Np/m (Pozar), a=d/2, b=D/2.
-  const eta = ETA0 / Math.sqrt(er);
-  const alphaC = (rs / (2 * eta * Math.log(D / d))) * (2 / d + 2 / D);
-  // αd = π·√εr·tanδ/λ0, Np/m.
-  const alphaD = (Math.PI * Math.sqrt(er) * el.tanD * el.frequencyHz) / C0;
-  const np2db = 8.685889638;
+  let te = '';
+  let tm = '';
+  if (fcTE11 <= freq) {
+    te = 'H(1,1) ';
+    for (let m = 2; m < 10; m++) {
+      const fc = fcTE11 + (m - 1) * fcStep;
+      if (fc > freq) break;
+      te += `H(1,${m}) `;
+    }
+  }
+  for (let m = 1; m < 10; m++) {
+    const fc = m * fcStep;
+    if (fc > freq) break;
+    tm += `E(0,${m}) `;
+  }
+  return { te11: fcTE11, te: te.trim() || 'none', tm: tm.trim() || 'none' };
+}
+
+export function coaxAnalyze(phys: CoaxPhysical, el: TcElectrical): CoaxResult {
+  const { innerDiaM: din, outerDiaM: dout, lengthM: len } = phys;
+  const { epsilonR: epsr, mur, tanD } = el;
+
+  const z0 = (ZF0 / (2.0 * Math.PI * Math.sqrt(epsr))) * Math.log(dout / din);
+  const lambdaG = C0 / el.frequencyHz / Math.sqrt(epsr * mur);
+  const angLRad = (2.0 * Math.PI * len) / lambdaG;
+
+  // Dielectric loss αd = (π/c)·f·√εr·tanδ, in dB/m after LOG2DB.
+  const alphaD = (Math.PI / C0) * el.frequencyHz * Math.sqrt(epsr) * tanD * LOG2DB;
+  // Conductor loss αc = √εr·(1/Din+1/Dout)/ln(Dout/Din)·Rs/ZF0, dB/m.
+  const rs = surfaceResistance(el);
+  const alphaC =
+    ((Math.sqrt(epsr) * (1.0 / din + 1.0 / dout)) / Math.log(dout / din)) * (rs / ZF0) * LOG2DB;
+
+  const modes = modeCutoffs(din, dout, epsr, mur, el.frequencyHz);
 
   return {
     z0,
-    epsEff,
-    angleDeg: electricalLengthDeg(len, el.frequencyHz, epsEff),
-    conductorLossDb: alphaC * np2db * len,
-    dielectricLossDb: alphaD * np2db * len,
-    skinDepthM: delta,
-    extra: { te11CutoffHz: C0 / (Math.PI * ((D + d) / 2) * Math.sqrt(er)) },
+    epsEff: epsr,
+    angleDeg: radToDeg(angLRad),
+    conductorLossDb: alphaC * len,
+    dielectricLossDb: alphaD * len,
+    skinDepthM: skinDepth(el),
+    extra: { te11CutoffHz: modes.te11 },
+    teModes: modes.te,
+    tmModes: modes.tm,
   };
 }
 
-/** Synthesis: solve the inner diameter for Z0 (shield kept), then length. */
+/**
+ * Synthesis (KiCad COAX::Synthesize). Solve one diameter for the target Z0,
+ * then the length for the electrical angle. `target` picks which diameter is
+ * solved (default: inner).
+ */
 export function coaxSynthesize(
   phys: CoaxPhysical,
-  el: TranslineElectrical,
+  el: TcElectrical,
   z0Target: number,
   angleDeg: number,
+  target: 'inner' | 'outer' = 'inner',
 ): CoaxPhysical | null {
-  const d = phys.outerDiaM / Math.exp((z0Target * 2 * Math.PI * Math.sqrt(el.epsilonR)) / ETA0);
-  if (!Number.isFinite(d) || d <= 0 || d >= phys.outerDiaM) return null;
-  return {
-    ...phys,
-    innerDiaM: d,
-    lengthM: physicalLengthM(angleDeg, el.frequencyHz, el.epsilonR),
-  };
+  const { epsilonR: epsr, mur } = el;
+  const k = ((z0Target * Math.sqrt(epsr)) / ZF0) * 2.0 * Math.PI;
+  const out = { ...phys };
+  if (target === 'inner') out.innerDiaM = phys.outerDiaM / Math.exp(k);
+  else out.outerDiaM = phys.innerDiaM * Math.exp(k);
+
+  if (!(out.innerDiaM > 0) || !(out.outerDiaM > 0) || out.innerDiaM >= out.outerDiaM) return null;
+
+  const lambdaG = C0 / el.frequencyHz / Math.sqrt(epsr * mur);
+  out.lengthM = (lambdaG * degToRad(angleDeg)) / (2.0 * Math.PI);
+  return out;
 }

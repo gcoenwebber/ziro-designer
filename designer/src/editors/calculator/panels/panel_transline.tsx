@@ -151,6 +151,7 @@ export function PanelTransline(): JSX.Element {
     epsilonR: parseNum(sub.er),
     tanD: parseNum(sub.tand),
     sigma: parseNum(sub.sigma),
+    mur: 1, // dielectric relative permeability (non-magnetic substrate)
     murC: parseNum(sub.mur),
   });
   const v = (key: string): number => phys[key] ?? 0;

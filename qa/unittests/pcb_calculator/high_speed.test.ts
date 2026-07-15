@@ -25,6 +25,7 @@ const el = {
   epsilonR: 4.5,
   tanD: 0.02,
   sigma: 5.8e7,
+  mur: 1,
   murC: 1,
 };
 
@@ -152,14 +153,21 @@ describe('coplanar waveguide', () => {
 });
 
 describe('coax', () => {
-  it('RG-58-like: d=0.9 mm, D=2.95 mm, εr=2.3 → ~46.6 Ω', () => {
+  it('KiCad formula: d=0.9 mm, D=2.95 mm, εr=2.3 → 46.936 Ω', () => {
     const r = coaxAnalyze(
       { innerDiaM: 0.9e-3, outerDiaM: 2.95e-3, lengthM: 1 },
       { ...el, epsilonR: 2.3, tanD: 2e-4 },
     );
-    expect(r.z0).toBeGreaterThan(44);
-    expect(r.z0).toBeLessThan(49);
-    expect(r.extra.te11CutoffHz).toBeGreaterThan(1e10);
+    // Z0 = ZF0/(2π√εr)·ln(Dout/Din) = 376.730313/(2π√2.3)·ln(2.95/0.9)
+    expect(r.z0).toBeCloseTo(46.936, 2);
+    expect(r.epsEff).toBe(2.3);
+    // TE11 cutoff = 2c/(π√εr·(Din+Dout)).
+    expect(r.extra.te11CutoffHz).toBeCloseTo(
+      (2 * 299792458) / (Math.PI * Math.sqrt(2.3) * (0.9e-3 + 2.95e-3)),
+      0,
+    );
+    expect(r.conductorLossDb).toBeGreaterThan(0);
+    expect(r.dielectricLossDb).toBeGreaterThan(0);
   });
 
   it('synthesis inverts exactly', () => {
