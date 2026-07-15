@@ -24,6 +24,7 @@ import {
   runErc,
   buildSheetTree,
   sheetFile,
+  sheetName,
   findRootFile,
   addItems,
   makeSheet,
@@ -239,6 +240,12 @@ export function SchematicEditor({
     kind: LabelKind;
     text: string;
     shape?: LabelShape;
+  } | null>(null);
+  // Editing a hierarchical sheet's name/file (DIALOG_SHEET_PROPERTIES).
+  const [sheetEdit, setSheetEdit] = useState<{
+    index: number;
+    name: string;
+    file: string;
   } | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const [localToggles, setLocalToggles] = useState<Set<string>>(new Set(DEFAULT_TOGGLES));
@@ -990,6 +997,25 @@ export function SchematicEditor({
     [doc, runCommand],
   );
 
+  const commitSheetEdit = useCallback(() => {
+    setSheetEdit((se) => {
+      if (!se || !doc) return null;
+      const orig = doc.sheets[se.index];
+      const name = se.name.trim();
+      if (orig && name) {
+        const fields = orig.fields.map((f) =>
+          f.key === 'Sheetname'
+            ? { ...f, value: name }
+            : f.key === 'Sheetfile'
+              ? { ...f, value: se.file.trim() }
+              : f,
+        );
+        runCommand(replaceSheet(se.index, { ...orig, fields }));
+      }
+      return null;
+    });
+  }, [doc, runCommand]);
+
   const onImagePlaced = useCallback(
     (at: Vec2) => {
       setPendingImage((img) => {
@@ -1325,6 +1351,19 @@ export function SchematicEditor({
             } else if (d.tables.some((t, i) => refId('table', t.uuid, i) === id)) {
               e.preventDefault();
               onEditItem(id, 'table');
+            } else {
+              // E on a sheet opens its properties (double-click enters it).
+              const si = d.sheets.findIndex((s, i) => refId('sheet', s.uuid, i) === id);
+              if (si !== -1) {
+                e.preventDefault();
+                const sh = d.sheets[si]!;
+                setSheetEdit({
+                  index: si,
+                  name: sheetName(sh),
+                  // Raw Sheetfile field value (may carry a sub-path), not the basename.
+                  file: sh.fields.find((f) => f.key === 'Sheetfile')?.value ?? '',
+                });
+              }
             }
             return d;
           });
@@ -1666,6 +1705,59 @@ export function SchematicEditor({
           onOk={commitLabelEdit}
           onCancel={() => setLabelEdit(null)}
         />
+      )}
+
+      {/* Editing an existing sheet's name/file (DIALOG_SHEET_PROPERTIES, E key). */}
+      {sheetEdit && (
+        <div className="ze-modal-backdrop" onMouseDown={() => setSheetEdit(null)}>
+          <div className="ze-modal ze-label-dialog" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="ze-modal-header">
+              Sheet Properties
+              <span className="x" title="Cancel" onClick={() => setSheetEdit(null)}>
+                ✕
+              </span>
+            </div>
+            <div
+              className="ze-label-dialog-body"
+              style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
+            >
+              <label className="row">
+                <span>Sheet name</span>
+                <input
+                  className="ze-search"
+                  autoFocus
+                  value={sheetEdit.name}
+                  onChange={(e) => setSheetEdit({ ...sheetEdit, name: e.target.value })}
+                  onKeyDown={(e) => e.stopPropagation()}
+                />
+              </label>
+              <label className="row">
+                <span>File name</span>
+                <input
+                  className="ze-search"
+                  value={sheetEdit.file}
+                  onChange={(e) => setSheetEdit({ ...sheetEdit, file: e.target.value })}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter') commitSheetEdit();
+                  }}
+                />
+              </label>
+            </div>
+            <div className="ze-modal-footer">
+              <button className="ze-btn" onClick={() => setSheetEdit(null)}>
+                Cancel
+              </button>
+              <button
+                className="ze-btn primary"
+                disabled={!sheetEdit.name.trim()}
+                onClick={commitSheetEdit}
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Hierarchical sheet: after drawing the rectangle, name it and its file. */}
