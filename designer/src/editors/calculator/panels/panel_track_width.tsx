@@ -3,40 +3,48 @@
  * layers. Counterpart: KiCad `calculator_panels/panel_track_width.cpp`.
  */
 
-import { useMemo, useState, type JSX } from 'react';
-import { trackWidth } from '@ziroeda/pcb_calculator';
-import { Field, Group, LEN_UNITS, NumField, type UnitOpt, fmt } from '../fields.js';
-
-// Copper thickness selector: weight (oz/ft²) or an absolute thickness.
-const COPPER_UNITS: UnitOpt[] = [
-  { label: 'oz/ft²', mult: 35e-6 },
-  { label: 'µm', mult: 1e-6 },
-  { label: 'mm', mult: 1e-3 },
-];
+import { useState, type JSX } from 'react';
+import { COPPER_RESISTIVITY_OHM_M, trackWidth } from '@ziroeda/pcb_calculator';
+import { Field, Group, LEN_UNITS, NumField, fmt } from '../fields.js';
 
 export function PanelTrackWidth(): JSX.Element {
-  // State in base SI units; the widgets convert to/from the chosen unit.
+  // Controlling value: the applied current (shown in bold, like KiCad).
   const [currentA, setCurrentA] = useState(1);
   const [deltaTC, setDeltaTC] = useState(10);
   const [lengthM, setLengthM] = useState(0.2);
-  const [thicknessM, setThicknessM] = useState(35e-6);
+  const [extThicknessM, setExtThicknessM] = useState(35e-6);
+  const [intThicknessM, setIntThicknessM] = useState(35e-6);
 
-  const valid = currentA > 0 && deltaTC > 0 && lengthM >= 0 && thicknessM > 0;
-  const params = useMemo(
-    () => ({ currentA, deltaTC, lengthM, thicknessM }),
-    [currentA, deltaTC, lengthM, thicknessM],
-  );
-  const ext = valid ? trackWidth(params, true) : null;
-  const int_ = valid ? trackWidth(params, false) : null;
+  const valid = currentA > 0 && deltaTC > 0 && lengthM >= 0;
+  const ext =
+    valid && extThicknessM > 0
+      ? trackWidth({ currentA, deltaTC, lengthM, thicknessM: extThicknessM }, true)
+      : null;
+  const int_ =
+    valid && intThicknessM > 0
+      ? trackWidth({ currentA, deltaTC, lengthM, thicknessM: intThicknessM }, false)
+      : null;
 
-  const results = (r: ReturnType<typeof trackWidth> | null): JSX.Element => (
-    <>
+  const layerBox = (
+    title: string,
+    r: ReturnType<typeof trackWidth> | null,
+    thicknessM: number,
+    setThicknessM: (v: number) => void,
+  ): JSX.Element => (
+    <Group title={title}>
       <NumField
-        label="Required track width:"
+        label="Track width (W):"
         units={LEN_UNITS}
         defaultUnit="mm"
         base={r ? r.widthM : NaN}
         readOnly
+      />
+      <NumField
+        label="Track thickness (H):"
+        units={LEN_UNITS}
+        defaultUnit="µm"
+        base={thicknessM}
+        onBase={setThicknessM}
       />
       <Field
         label="Cross-section area:"
@@ -47,51 +55,64 @@ export function PanelTrackWidth(): JSX.Element {
       <Field label="Resistance:" value={r ? fmt(r.resistanceOhm) : '--'} readOnly unit="Ω" />
       <Field label="Voltage drop:" value={r ? fmt(r.voltageDrop) : '--'} readOnly unit="V" />
       <Field label="Power loss:" value={r ? fmt(r.powerLossW) : '--'} readOnly unit="W" />
-    </>
+    </Group>
   );
 
   return (
     <div>
-      <h3>Track Width (IPC-2221)</h3>
-      <div className="calc-formula">
-        I = K · ΔT^0.44 · (W·H)^0.725 — K = 0.048 external, 0.024 internal
-      </div>
-      <div className="calc-note">
-        The IPC-2221 nomograph-based estimate; valid for currents up to ~35 A, temperature rise up
-        to 100 °C and copper up to 3 oz/ft².
-      </div>
-      <Group title="Parameters">
-        <NumField
-          label="Current:"
-          units={[{ label: 'A', mult: 1 }]}
-          base={currentA}
-          onBase={setCurrentA}
-        />
-        <Field
-          label="Temperature rise:"
-          value={fmt(deltaTC)}
-          onChange={(v) => setDeltaTC(Number(v) || 0)}
-          unit="°C"
-        />
-        <NumField
-          label="Conductor length:"
-          units={LEN_UNITS}
-          defaultUnit="cm"
-          base={lengthM}
-          onBase={setLengthM}
-        />
-        <NumField
-          label="Copper thickness:"
-          units={COPPER_UNITS}
-          base={thicknessM}
-          onBase={setThicknessM}
-        />
-      </Group>
-      {!valid && <div className="calc-error">Enter positive values.</div>}
+      <h3>Track Width</h3>
       <div className="calc-row">
-        <Group title="External layer traces">{results(ext)}</Group>
-        <Group title="Internal layer traces">{results(int_)}</Group>
+        <Group title="Parameters">
+          <label className="calc-field">
+            <span className="calc-field-label" style={{ fontWeight: 700 }}>
+              Current (I):
+            </span>
+            <input
+              className="calc-input"
+              style={{ fontWeight: 700 }}
+              value={fmt(currentA)}
+              spellCheck={false}
+              onChange={(e) => setCurrentA(Number(e.target.value) || 0)}
+            />
+            <span className="calc-unit">A</span>
+          </label>
+          <Field
+            label="Temperature rise (ΔT):"
+            value={fmt(deltaTC)}
+            onChange={(v) => setDeltaTC(Number(v) || 0)}
+            unit="°C"
+          />
+          <NumField
+            label="Conductor length:"
+            units={LEN_UNITS}
+            defaultUnit="mm"
+            base={lengthM}
+            onBase={setLengthM}
+          />
+          <Field
+            label="Copper resistivity:"
+            value={String(COPPER_RESISTIVITY_OHM_M)}
+            readOnly
+            unit="Ω·m"
+          />
+        </Group>
+        {layerBox('External Layer Tracks', ext, extThicknessM, setExtThicknessM)}
+        {layerBox('Internal Layer Tracks', int_, intThicknessM, setIntThicknessM)}
       </div>
+      {!valid && <div className="calc-error">Enter positive current, ΔT and length.</div>}
+
+      <fieldset className="calc-group">
+        <legend>Help</legend>
+        <div className="calc-note" style={{ lineHeight: 1.6 }}>
+          Enter the required current and the track widths are sized to carry it. The controlling
+          value (current) is shown in bold. Valid for currents up to ~35 A external / 17.5 A
+          internal, temperature rise up to 100 °C and widths up to 400 mils (10 mm).
+        </div>
+        <div className="calc-formula" style={{ marginTop: 8 }}>
+          I = K · ΔT^0.44 · (W·H)^0.725 — IPC-2221, K = 0.048 external / 0.024 internal (W, H in
+          mils)
+        </div>
+      </fieldset>
     </div>
   );
 }
