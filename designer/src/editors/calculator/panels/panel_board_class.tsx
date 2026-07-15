@@ -9,7 +9,8 @@ import { fmt } from '../fields.js';
 
 export function PanelBoardClass(): JSX.Element {
   const [inches, setInches] = useState(false);
-  const conv = (mm: number): string => (inches ? fmt(mm / 25.4, 4) : fmt(mm, 4));
+  const conv = (mm: number): string =>
+    Number.isNaN(mm) ? '-' : inches ? fmt(mm / 25.4, 4) : fmt(mm, 4);
 
   return (
     <div>

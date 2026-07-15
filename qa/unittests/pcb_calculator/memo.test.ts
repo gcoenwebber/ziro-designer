@@ -8,13 +8,21 @@ import {
 } from '@ziroeda/pcb_calculator';
 
 describe('board classes memo', () => {
-  it('every row has one value per class, tightening monotonically', () => {
-    for (const row of BOARD_CLASS_ROWS) {
-      expect(row.mm).toHaveLength(BOARD_CLASS_COUNT);
-      for (let i = 1; i < row.mm.length; i++) {
-        expect(row.mm[i]!).toBeLessThanOrEqual(row.mm[i - 1]!);
-      }
-    }
+  it('matches KiCad: 5 rows, one value per class, KiCad values', () => {
+    expect(BOARD_CLASS_ROWS).toHaveLength(5);
+    for (const row of BOARD_CLASS_ROWS) expect(row.mm).toHaveLength(BOARD_CLASS_COUNT);
+    const byLabel = (l: string) => BOARD_CLASS_ROWS.find((r) => r.label === l)!.mm;
+    expect(byLabel('Lines width')).toEqual([0.8, 0.5, 0.31, 0.21, 0.15, 0.12]);
+    expect(byLabel('Minimum clearance')).toEqual([0.68, 0.5, 0.31, 0.21, 0.15, 0.12]);
+    expect(byLabel('Plated Pad: (diameter - drill)')).toEqual([1.19, 0.78, 0.6, 0.49, 0.39, 0.35]);
+    // KiCad marks some entries N/A (NaN here).
+    expect(Number.isNaN(byLabel('Via: (diameter - drill)')[0]!)).toBe(true);
+    expect(Number.isNaN(byLabel('NP Pad: (diameter - drill)')[3]!)).toBe(true);
+  });
+
+  it('defined values tighten with class where applicable', () => {
+    const lines = BOARD_CLASS_ROWS.find((r) => r.label === 'Lines width')!.mm;
+    for (let i = 1; i < lines.length; i++) expect(lines[i]!).toBeLessThanOrEqual(lines[i - 1]!);
   });
 });
 
