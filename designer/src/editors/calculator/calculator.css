@@ -209,6 +209,31 @@
   margin-left: 8px;
 }
 
+/* --- sub-tabs (e.g. Electrical Spacing: IPC-2221 / IEC 60664) --- */
+.calc-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--chrome-border);
+  margin-bottom: 12px;
+}
+
+.calc-tab {
+  padding: 6px 16px;
+  cursor: pointer;
+  background: var(--chrome-bg2);
+  border: 1px solid var(--chrome-border);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  color: #b8bcc4;
+}
+
+.calc-tab.active {
+  background: var(--panel-bg);
+  color: var(--chrome-fg);
+  font-weight: 600;
+  outline: 1px solid var(--chrome-active-border);
+}
+
 /* --- E-series coloured grids --- */
 .es-grid {
   border-collapse: collapse;
