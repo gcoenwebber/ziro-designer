@@ -30,10 +30,14 @@ export function PanelGalvanicCorrosion(): JSX.Element {
         <table className="calc-table" style={{ fontSize: 12 }}>
           <thead>
             <tr>
-              <th className="rowhead">Metal (anodic index)</th>
+              <th className="rowhead">Metal (potential, V)</th>
               {CORROSION_METALS.map((m) => (
-                <th key={m.name} title={m.name} style={{ maxWidth: 44, overflow: 'hidden' }}>
-                  {(m.name.split(' ')[0] ?? m.name).slice(0, 6)}
+                <th
+                  key={m.name}
+                  title={`${m.name} (${m.symbol})`}
+                  style={{ maxWidth: 60, overflow: 'hidden' }}
+                >
+                  {m.symbol.slice(0, 8)}
                 </th>
               ))}
             </tr>
