@@ -496,31 +496,35 @@ export function DrawingSheetEditor({
     [anchoredPoint, addItem],
   );
 
-  const onPickBitmap = useCallback(
-    async (file: File) => {
-      const pos =
-        pendingBitmapPos.current ?? anchoredPoint({ x: pageW / 2, y: pageH / 2 }, 'rbcorner');
-      pendingBitmapPos.current = null;
+  // Create a bitmap item from any image File — used by Place → Image, by pasting
+  // an image, and by images the Image Converter puts on the clipboard.
+  const addBitmapFromFile = useCallback(
+    async (file: File, pos: WksPoint) => {
       try {
         const { b64, pxW, pxH, ppi } = await imageFileToPng(file);
         addItem(
-          {
-            type: 'bitmap',
-            ...NEW_BASE,
-            pos,
-            scale: 1,
-            pngB64: b64,
-            ppi,
-            pxW,
-            pxH,
-          },
-          `Add image (${file.name})`,
+          { type: 'bitmap', ...NEW_BASE, pos, scale: 1, pngB64: b64, ppi, pxW, pxH },
+          `Add image (${file.name || 'pasted image'})`,
         );
       } catch (err) {
-        setStatus(`Failed to load image ${file.name}: ${(err as Error).message}`);
+        setStatus(`Failed to load image: ${(err as Error).message}`);
       }
     },
-    [anchoredPoint, addItem, pageW, pageH],
+    [addItem],
+  );
+
+  const centreOrCursorPoint = useCallback(
+    (): WksPoint => anchoredPoint(cursor ?? { x: pageW / 2, y: pageH / 2 }, 'rbcorner'),
+    [anchoredPoint, cursor, pageW, pageH],
+  );
+
+  const onPickBitmap = useCallback(
+    async (file: File) => {
+      const pos = pendingBitmapPos.current ?? centreOrCursorPoint();
+      pendingBitmapPos.current = null;
+      await addBitmapFromFile(file, pos);
+    },
+    [addBitmapFromFile, centreOrCursorPoint],
   );
 
   // ---- selection edits ----
@@ -567,22 +571,88 @@ export function DrawingSheetEditor({
 
   const copySelection = useCallback(() => {
     if (selection.size === 0) return;
-    clipboard.current = [...selection]
-      .sort((a, b) => a - b)
-      .map((i) => structuredClone(sheet.items[i]!));
-    setStatus(
-      `Copied ${clipboard.current.length} item${clipboard.current.length === 1 ? '' : 's'}`,
-    );
+    const items = [...selection].sort((a, b) => a - b).map((i) => structuredClone(sheet.items[i]!));
+    clipboard.current = items;
+    // Also place a .kicad_wks fragment on the system clipboard so the selection
+    // can be pasted across editor instances / tabs (and by an external tool).
+    try {
+      const frag = serializeDrawingSheet({ ...sheet, items });
+      void navigator.clipboard?.writeText?.(frag).catch(() => {});
+    } catch {
+      /* clipboard unavailable */
+    }
+    setStatus(`Copied ${items.length} item${items.length === 1 ? '' : 's'}`);
   }, [sheet, selection]);
+
+  // Append items to the sheet (used by clipboard paste of items / a whole sheet).
+  const appendItems = useCallback(
+    (incoming: WksItem[], description: string) => {
+      if (incoming.length === 0) return;
+      const off = { x: mmToIU(2), y: mmToIU(2) };
+      const shifted = incoming.map((it) => translateItem(structuredClone(it), off));
+      const start = sheet.items.length;
+      commit({ ...sheet, items: [...sheet.items, ...shifted] }, description);
+      setSelection(new Set(shifted.map((_, k) => start + k)));
+    },
+    [sheet, commit],
+  );
 
   const pasteClipboard = useCallback(() => {
     if (clipboard.current.length === 0) return;
-    const off = { x: mmToIU(2), y: mmToIU(2) };
-    const copies = clipboard.current.map((it) => translateItem(structuredClone(it), off));
-    const next = { ...sheet, items: [...sheet.items, ...copies] };
-    commit(next, `Pasted ${copies.length} item${copies.length === 1 ? '' : 's'}`);
-    setSelection(new Set(copies.map((_, k) => sheet.items.length + k)));
-  }, [sheet, commit]);
+    appendItems(
+      clipboard.current,
+      `Pasted ${clipboard.current.length} item${clipboard.current.length === 1 ? '' : 's'}`,
+    );
+  }, [appendItems]);
+
+  // Parse `.kicad_wks` text from the clipboard and paste its items. Returns true
+  // when the text was a drawing sheet (or fragment) that yielded items.
+  const pasteWksText = useCallback(
+    async (text: string): Promise<boolean> => {
+      let parsed: WksSheet;
+      try {
+        parsed = await backfillBitmapMeta(parseDrawingSheet(text));
+      } catch {
+        return false;
+      }
+      if (parsed.items.length === 0) return false;
+      appendItems(
+        parsed.items,
+        `Pasted ${parsed.items.length} item${parsed.items.length === 1 ? '' : 's'} from clipboard`,
+      );
+      return true;
+    },
+    [appendItems],
+  );
+
+  // Menu → Paste: read the system clipboard (image → bitmap, .kicad_wks text →
+  // items), falling back to the in-editor clipboard when neither is available.
+  const pasteFromSystem = useCallback(async () => {
+    const clip: Clipboard | undefined = navigator.clipboard;
+    try {
+      if (typeof clip?.read === 'function') {
+        const contents = await clip.read();
+        for (const item of contents) {
+          const imgType = item.types.find((t) => t.startsWith('image/'));
+          if (imgType) {
+            const blob = await item.getType(imgType);
+            await addBitmapFromFile(
+              new File([blob], 'pasted-image', { type: imgType }),
+              centreOrCursorPoint(),
+            );
+            return;
+          }
+        }
+      }
+      if (typeof clip?.readText === 'function') {
+        const text = await clip.readText().catch(() => '');
+        if (text && (await pasteWksText(text))) return;
+      }
+    } catch {
+      /* permission denied / unsupported → fall back */
+    }
+    pasteClipboard();
+  }, [addBitmapFromFile, centreOrCursorPoint, pasteWksText, pasteClipboard]);
 
   const cutSelection = useCallback(() => {
     if (selection.size === 0) return;
@@ -801,7 +871,7 @@ export function DrawingSheetEditor({
         e.preventDefault();
         cutSelection();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
-        pasteClipboard();
+        /* handled by the native `paste` listener (system image / .kicad_wks) */
       } else if (e.key === 'Escape') {
         if (moveMode) setMoveMode(false);
         else if (drawingIndex.current !== null) cancelDrawing();
@@ -826,12 +896,48 @@ export function DrawingSheetEditor({
     deleteSelection,
     copySelection,
     cutSelection,
-    pasteClipboard,
     activeTool,
     moveMode,
     selection,
     cancelDrawing,
   ]);
+
+  // ---- system-clipboard paste (Ctrl+V): image → bitmap, .kicad_wks text → items ----
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent): void => {
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.tagName === 'SELECT'))
+        return;
+      const dt = e.clipboardData;
+      if (!dt) return;
+      // 1) A pasted image (from the Image Converter, a screenshot, etc.).
+      const imgItem = Array.from(dt.items).find(
+        (it) => it.kind === 'file' && it.type.startsWith('image/'),
+      );
+      if (imgItem) {
+        const file = imgItem.getAsFile();
+        if (file) {
+          e.preventDefault();
+          void addBitmapFromFile(file, centreOrCursorPoint());
+          return;
+        }
+      }
+      // 2) A pasted drawing sheet / fragment (kicad_wks S-expression text).
+      const text = dt.getData('text/plain');
+      if (text && /\(\s*(kicad_wks|polygon|tbtext|line|rect|bitmap)\b/.test(text)) {
+        e.preventDefault();
+        void pasteWksText(text);
+        return;
+      }
+      // 3) Otherwise fall back to items copied inside this editor.
+      if (clipboard.current.length) {
+        e.preventDefault();
+        pasteClipboard();
+      }
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [addBitmapFromFile, centreOrCursorPoint, pasteWksText, pasteClipboard]);
 
   // ---- menus (menubar.cpp) ----
   const recentItems: MenuItem[] =
@@ -894,7 +1000,7 @@ export function DrawingSheetEditor({
             shortcut: 'Ctrl+C',
             disabled: selection.size === 0,
           },
-          { label: 'Paste', icon: 'paste', action: pasteClipboard, shortcut: 'Ctrl+V' },
+          { label: 'Paste', icon: 'paste', action: () => void pasteFromSystem(), shortcut: 'Ctrl+V' },
           {
             label: 'Delete',
             icon: 'dsDelete',
@@ -984,7 +1090,7 @@ export function DrawingSheetEditor({
       redo,
       cutSelection,
       copySelection,
-      pasteClipboard,
+      pasteFromSystem,
       deleteSelection,
       selection,
       onExitToHome,
