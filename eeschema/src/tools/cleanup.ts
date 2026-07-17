@@ -15,6 +15,7 @@
 
 import type { Schematic, SchLine, SchJunction, Vec2 } from '../types.js';
 import { makeWireWithUuid, makeBus, makeJunction, newUuid } from './build.js';
+import { pruneGroupMembers } from './sch_group_tool.js';
 import type { EditCommand } from './command.js';
 
 const eq = (a: Vec2, b: Vec2): boolean => a.x === b.x && a.y === b.y;
@@ -290,7 +291,9 @@ export function mergeColinearWires(sch: Schematic): Schematic {
 export function withCleanup(cmd: EditCommand): EditCommand {
   return {
     label: cmd.label,
-    apply: (doc) => mergeColinearWires(cmd.apply(doc)),
+    // Post-commit cleanup: colinear wire merge, then group-member pruning so
+    // deleting items drops them from any group (empty groups stop serializing).
+    apply: (doc) => pruneGroupMembers(mergeColinearWires(cmd.apply(doc))),
     invert: (before) => restoreTo(before, cmd.label),
   };
 }

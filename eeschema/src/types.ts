@@ -374,6 +374,22 @@ export interface SchSheet {
   readonly source: SList;
 }
 
+/**
+ * An item group (`(group …)`). Mirrors KiCad `SCH_GROUP`: a named set of
+ * member items referenced by uuid (groups themselves have uuids, so groups
+ * can nest as members of other groups).
+ */
+export interface SchGroup {
+  readonly name: string;
+  readonly uuid?: string;
+  readonly locked?: boolean;
+  /** Design-block library link (`(lib_id "Lib:Name")`), when present. */
+  readonly libId?: string;
+  /** Member item uuids (serialized sorted; empty groups are never written). */
+  readonly members: readonly string[];
+  readonly source: SList;
+}
+
 /** Page/sheet metadata block. */
 export interface TitleBlock {
   readonly title?: string;
@@ -407,6 +423,8 @@ export interface Schematic {
   readonly textBoxes: readonly SchTextBox[];
   /** Tables (SCH_TABLE): grids of table cells with borders/separators. */
   readonly tables: readonly SchTable[];
+  /** Item groups (SCH_GROUP): named sets of member item uuids. */
+  readonly groups: readonly SchGroup[];
   /** Document-level `(sheet_instances (path "/" (page "1")))` — the root sheet's
    *  own page number(s), one per project path (no project wrapper). */
   readonly sheetInstances: readonly SheetInstance[];

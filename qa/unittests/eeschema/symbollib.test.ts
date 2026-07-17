@@ -63,6 +63,7 @@ describe('placeSymbol', () => {
       graphics: [],
       textBoxes: [],
       tables: [],
+      groups: [],
       sheetInstances: [],
       source: parse('(kicad_sch (version 1))'),
     } as const;

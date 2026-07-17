@@ -27,6 +27,9 @@ import {
   setPageSettingsCommand,
   getPageSettings,
   bulkEditFieldsCommand,
+  groupItemsCommand,
+  ungroupItemsCommand,
+  expandSelectionToGroups,
   type PageSettings,
   findMatches,
   replaceCommand,
@@ -363,18 +366,29 @@ export function SchematicEditor({
     return { highlightWires: items, highlightName: name };
   }, [netlist, highlightItem]);
 
+  // The live document for stable callbacks (selection promotion needs groups).
+  const docRef = useRef(doc);
+  docRef.current = doc;
+  // Group promotion (SCH_SELECTION_TOOL): clicking a member selects its whole
+  // group, so every selection result expands through the document's groups.
+  const promote = (ids: ReadonlySet<string>): ReadonlySet<string> =>
+    docRef.current ? expandSelectionToGroups(docRef.current, ids) : ids;
+
   const onSelect = useCallback((id: string | null, additive: boolean) => {
     setHighlightItem(null); // a selection clears any net highlight (KiCad keeps the two exclusive)
     setSelection((prev) => {
       if (id === null) return additive ? prev : new Set();
       if (additive) {
         const next = new Set(prev);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
+        if (next.has(id)) {
+          // Toggling a grouped member off removes its whole group.
+          for (const m of promote(new Set([id]))) next.delete(m);
+        } else for (const m of promote(new Set([id]))) next.add(m);
         return next;
       }
-      return new Set([id]);
+      return new Set(promote(new Set([id])));
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Highlight-Net tool: brighten a net and clear the selection (KiCad's
@@ -390,19 +404,21 @@ export function SchematicEditor({
     (ids: ReadonlySet<string>, additive: boolean, subtractive: boolean) => {
       setHighlightItem(null);
       setSelection((prev) => {
+        const hit = promote(ids);
         if (subtractive) {
           const next = new Set(prev);
-          for (const id of ids) next.delete(id);
+          for (const id of hit) next.delete(id);
           return next;
         }
         if (additive) {
           const next = new Set(prev);
-          for (const id of ids) next.add(id);
+          for (const id of hit) next.add(id);
           return next;
         }
-        return new Set(ids);
+        return new Set(hit);
       });
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -1348,6 +1364,18 @@ export function SchematicEditor({
       else if (id === 'editSymbolFields') setFieldsTableOpen(true);
       else if (id === 'symbolBrowser') setBrowserOpen(true);
       else if (id === 'assignFootprints') setAssignFpOpen(true);
+      // Group / Ungroup (SCH_GROUP_TOOL): members stay selected afterwards —
+      // upstream selects the new group (= its members) / the freed members.
+      else if (id === 'group')
+        setSelection((sel) => {
+          if (sel.size >= 2) runCommand(groupItemsCommand(sel));
+          return sel;
+        });
+      else if (id === 'ungroup')
+        setSelection((sel) => {
+          if (sel.size > 0) runCommand(ungroupItemsCommand(sel));
+          return sel;
+        });
       else if (id === 'openPreferences') setPrefsOpen(true);
       else if (id === 'close') onExitToHome();
       else if (id === 'find') openFindDialog('find');
