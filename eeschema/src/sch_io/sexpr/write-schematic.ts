@@ -31,6 +31,7 @@ import type {
   SchTextBox,
   SchTable,
   SchTableCell,
+  SchGroup,
   TextEffects,
   Stroke,
   SheetInstance,
@@ -499,6 +500,17 @@ function writeTextBox(tb: SchTextBox): SList {
 }
 
 /** Patch a table cell: content (item 1), position and size (like a text box). */
+/** `(group "name" (uuid …) [(locked yes)] [(lib_id "…")] (members …))` with the
+ *  member uuids sorted, exactly as SCH_IO_KICAD_SEXPR::saveGroup emits it. */
+function writeGroup(g: SchGroup): SList {
+  const items: SNode[] = [atom('group'), str(g.name)];
+  if (g.uuid !== undefined) items.push(list(atom('uuid'), str(g.uuid)));
+  if (g.locked) items.push(list(atom('locked'), atom('yes')));
+  if (g.libId !== undefined) items.push(list(atom('lib_id'), str(g.libId)));
+  items.push(list(atom('members'), ...[...g.members].sort().map(str)));
+  return { kind: 'list', items };
+}
+
 function writeTableCell(cell: SchTableCell): SList {
   let node = setItem(cell.source, 1, str(cell.text));
   node = patchAt(node, cell.start);
@@ -545,6 +557,7 @@ const ITEM_HEADS = new Set([
   'arc',
   'text_box',
   'table',
+  'group',
 ]);
 
 /** Rebuild the `(kicad_sch ...)` root list from the current model. */
@@ -572,6 +585,9 @@ export function writeSchematic(sch: Schematic): SList {
     // nodes pass through untouched.
     ...sch.images.map((im) => im.source),
     ...sch.graphics.map((g) => g.source),
+    // Groups serialize last, like upstream; empty groups are never written
+    // (SCH_IO_KICAD_SEXPR::saveGroup).
+    ...sch.groups.filter((g) => g.members.length > 0).map(writeGroup),
   );
 
   // Preserve any remaining structural nodes (sheet_instances, embedded_fonts, …).

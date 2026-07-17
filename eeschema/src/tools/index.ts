@@ -17,3 +17,4 @@ export * from './sch_find_replace_tool.js';
 export * from './annotate.js';
 export * from './sch_sheet_path.js';
 export * from './page_settings.js';
+export * from './sch_group_tool.js';

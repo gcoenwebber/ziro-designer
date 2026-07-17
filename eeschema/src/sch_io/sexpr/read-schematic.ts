@@ -39,6 +39,7 @@ import type {
   SchSheet,
   SchSymbol,
   SchTable,
+  SchGroup,
   SchTableCell,
   SchTextBox,
   SheetInstance,
@@ -692,6 +693,24 @@ function readTitleBlock(node: SList): TitleBlock {
   return tb;
 }
 
+/** `(group "NAME" (uuid …) [(locked yes)] [(lib_id "…")] (members …uuids))`
+ *  (SCH_IO_KICAD_SEXPR_PARSER::parseGroup). */
+function readGroup(node: SList): SchGroup {
+  const g: { -readonly [K in keyof SchGroup]: SchGroup[K] } = {
+    name: arg(node, 0) ?? '',
+    members: [],
+    source: node,
+  };
+  const uuid = stringField(node, 'uuid');
+  if (uuid !== undefined) g.uuid = uuid;
+  if (boolField(node, 'locked')) g.locked = true;
+  const libId = stringField(node, 'lib_id');
+  if (libId !== undefined) g.libId = libId;
+  const members = childNamed(node, 'members');
+  if (members) g.members = args(members);
+  return g;
+}
+
 const LABEL_KINDS: Record<string, LabelKind> = {
   label: 'label',
   global_label: 'global_label',
@@ -732,6 +751,7 @@ export function readSchematic(root: SList): Schematic {
   const graphics: LibGraphic[] = [];
   const textBoxes: SchTextBox[] = [];
   const tables: SchTable[] = [];
+  const groups: SchGroup[] = [];
 
   const libSymbolsNode = childNamed(root, 'lib_symbols');
   if (libSymbolsNode) {
@@ -756,6 +776,7 @@ export function readSchematic(root: SList): Schematic {
       if (g) graphics.push(g);
     } else if (name === 'text_box') textBoxes.push(readTextBox(item));
     else if (name === 'table') tables.push(readTable(item));
+    else if (name === 'group') groups.push(readGroup(item));
     else if (LABEL_KINDS[name]) labels.push(readLabel(item, LABEL_KINDS[name]!));
   }
 
@@ -773,6 +794,7 @@ export function readSchematic(root: SList): Schematic {
     graphics,
     textBoxes,
     tables,
+    groups,
     // Document-level (sheet_instances (path "/" (page "1"))): the root sheet's page.
     sheetInstances: (() => {
       const n = childNamed(root, 'sheet_instances');
