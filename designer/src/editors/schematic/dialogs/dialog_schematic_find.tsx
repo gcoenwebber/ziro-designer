@@ -1,9 +1,12 @@
 /**
  * Modeless Find dialog. Counterpart: `eeschema/dialogs/dialog_schematic_find.cpp`
- * (DIALOG_SCH_FIND) — the same options in the same order: Match case,
- * Words, Wildcards, Search pin names and numbers, Search hidden fields,
- * Search the current sheet only. Enter / F3 = Find Next, Shift+F3 = Find
- * Previous, Esc = close. (Replace mode comes with the replace tool port.)
+ * (DIALOG_SCH_FIND, dialog_sch_find_base.cpp) — the same rows in the same
+ * order: Search for / Replace with, the Direction radios, then Match case,
+ * Whole words only, Wildcards, the search-scope checkboxes, and the Find /
+ * Replace / Replace All / Close buttons. Enter / F3 = find in the chosen
+ * direction, Shift+Enter / Shift+F3 = reverse, Esc = close. Upstream options
+ * whose engines we don't have yet (regular expressions, selection-only,
+ * net names, the search panel) are greyed in place.
  */
 import { useEffect, useRef, useState, type JSX } from 'react';
 import type { MatchMode, SchSearchData } from '@ziroeda/eeschema';
@@ -35,6 +38,10 @@ export function DialogSchematicFind({
 }: Props): JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null);
   const [text, setText] = useState(data.findString);
+  // Direction radios (m_radioForward / m_radioBackward): the Find button
+  // searches in the chosen direction.
+  const [forward, setForward] = useState(true);
+  const doFind = (): void => (forward ? onFindNext() : onFindPrevious());
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -68,7 +75,7 @@ export function DialogSchematicFind({
               if (e.key === 'Enter') {
                 e.preventDefault();
                 if (e.shiftKey) onFindPrevious();
-                else onFindNext();
+                else doFind();
               } else if (e.key === 'Escape') {
                 e.preventDefault();
                 onClose();
@@ -95,6 +102,27 @@ export function DialogSchematicFind({
             />
           </label>
         )}
+        <div className="row" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 12 }}>Direction:</span>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <input
+              type="radio"
+              name="finddir"
+              checked={forward}
+              onChange={() => setForward(true)}
+            />
+            Forward
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <input
+              type="radio"
+              name="finddir"
+              checked={!forward}
+              onChange={() => setForward(false)}
+            />
+            Backward
+          </label>
+        </div>
         <div className="opts">
           <label>
             <input
@@ -110,7 +138,7 @@ export function DialogSchematicFind({
               checked={data.matchMode === 'wholeword'}
               onChange={(e) => setMode('wholeword', e.target.checked)}
             />
-            Words
+            Whole words only
           </label>
           <label>
             <input
@@ -119,6 +147,10 @@ export function DialogSchematicFind({
               onChange={(e) => setMode('wildcard', e.target.checked)}
             />
             Wildcards
+          </label>
+          <label className="disabled" title="Not supported yet" style={{ opacity: 0.45 }}>
+            <input type="checkbox" disabled />
+            Regular Expression
           </label>
           <label>
             <input
@@ -134,7 +166,7 @@ export function DialogSchematicFind({
               checked={data.searchAllFields}
               onChange={(e) => onChange({ ...data, searchAllFields: e.target.checked })}
             />
-            Search hidden fields
+            Include hidden fields
           </label>
           <label>
             <input
@@ -143,6 +175,10 @@ export function DialogSchematicFind({
               onChange={(e) => onChange({ ...data, searchCurrentSheetOnly: e.target.checked })}
             />
             Search the current sheet only
+          </label>
+          <label className="disabled" title="Not supported yet" style={{ opacity: 0.45 }}>
+            <input type="checkbox" disabled />
+            Search the current selection only
           </label>
           {replace && (
             <label>
@@ -154,14 +190,15 @@ export function DialogSchematicFind({
               Replace matches in reference designators
             </label>
           )}
+          <label className="disabled" title="Not supported yet" style={{ opacity: 0.45 }}>
+            <input type="checkbox" disabled />
+            Search net names
+          </label>
         </div>
         <div className="ze-find-buttons">
           <span className="status">{status}</span>
-          <button type="button" onClick={onFindPrevious}>
-            Find Previous
-          </button>
-          <button type="button" className="primary" onClick={onFindNext}>
-            Find Next
+          <button type="button" className="primary" onClick={doFind}>
+            Find
           </button>
           {replace && (
             <button type="button" onClick={onReplace}>

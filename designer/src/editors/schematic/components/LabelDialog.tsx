@@ -81,20 +81,27 @@ export function LabelDialog({
             />
           </label>
           {hasShape && (
-            <label className="row">
-              <span>Shape:</span>
-              <select
-                className="ze-select"
-                value={shape}
-                onChange={(e) => setShape(e.target.value as LabelShape)}
-              >
-                {SHAPES.map((s) => (
-                  <option key={s.value} value={s.value}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <fieldset
+              style={{
+                border: '1px solid var(--chrome-border)',
+                borderRadius: 4,
+                padding: '4px 10px 8px',
+                margin: '8px 0 0',
+              }}
+            >
+              <legend style={{ fontSize: 11.5, padding: '0 4px' }}>Shape</legend>
+              {SHAPES.map((s) => (
+                <label key={s.value} style={{ display: 'block', margin: '3px 0', fontSize: 12.5 }}>
+                  <input
+                    type="radio"
+                    name="labelshape"
+                    checked={shape === s.value}
+                    onChange={() => setShape(s.value)}
+                  />{' '}
+                  {s.label}
+                </label>
+              ))}
+            </fieldset>
           )}
         </div>
         <div className="ze-modal-footer">

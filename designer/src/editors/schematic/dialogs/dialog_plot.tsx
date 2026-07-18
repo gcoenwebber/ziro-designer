@@ -1,8 +1,11 @@
 /**
  * Plot dialog. Counterpart: `eeschema/dialogs/dialog_plot_schematic.cpp`
- * (DIALOG_PLOT_SCHEMATIC) — the output format, colour mode, "plot drawing
- * sheet", and background-colour options. The web port writes the file the
- * browser downloads: SVG (true vector), PNG (raster), or PDF (rendered page).
+ * (DIALOG_PLOT_SCHEMATIC) — the Output Format radio box on the left with the
+ * Options group (page size, drawing sheet, output mode, color theme,
+ * background, minimum line width) beside it, per-format option groups below,
+ * and the Plot Current Page / Plot All Pages buttons. Upstream formats we do
+ * not generate in the browser (Postscript, DXF) are greyed in place; the
+ * output directory is the browser's download folder, so the field is greyed.
  */
 
 import { useState, type JSX } from 'react';
@@ -11,27 +14,47 @@ import type { PlotOpts } from '../render/plot.js';
 export type PlotFormat = 'svg' | 'pdf' | 'png';
 
 interface Props {
-  onPlot: (format: PlotFormat, opts: PlotOpts) => void;
+  /** Active colour theme name (the Color theme: choice, fixed for now). */
+  themeName?: string;
+  onPlot: (format: PlotFormat, opts: PlotOpts, allPages: boolean) => void;
   onClose: () => void;
 }
 
-const FORMATS: { id: PlotFormat; label: string }[] = [
-  { id: 'svg', label: 'SVG' },
+const FORMATS: { id: string; label: string; disabled?: boolean }[] = [
+  { id: 'ps', label: 'Postscript', disabled: true },
   { id: 'pdf', label: 'PDF' },
+  { id: 'svg', label: 'SVG' },
+  { id: 'dxf', label: 'DXF', disabled: true },
   { id: 'png', label: 'PNG' },
 ];
 
-export function DialogPlot({ onPlot, onClose }: Props): JSX.Element {
-  const [format, setFormat] = useState<PlotFormat>('svg');
+export function DialogPlot({ themeName, onPlot, onClose }: Props): JSX.Element {
+  const [format, setFormat] = useState<PlotFormat>('pdf');
   const [color, setColor] = useState(true);
   const [drawingSheet, setDrawingSheet] = useState(true);
   const [background, setBackground] = useState(true);
+
+  const group: React.CSSProperties = {
+    border: '1px solid var(--chrome-border)',
+    borderRadius: 4,
+    padding: '6px 10px 8px',
+    margin: '0 0 10px',
+  };
+  const legend: React.CSSProperties = { fontSize: 11.5, padding: '0 4px' };
+  const row: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    margin: '5px 0',
+    fontSize: 12.5,
+  };
+  const lab: React.CSSProperties = { width: 118, flex: '0 0 auto', fontSize: 12 };
 
   return (
     <div className="ze-modal-backdrop" onMouseDown={onClose}>
       <div
         className="ze-modal"
-        style={{ width: 360, maxWidth: '92vw' }}
+        style={{ width: 560, maxWidth: '94vw' }}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="ze-modal-header">
@@ -40,59 +63,158 @@ export function DialogPlot({ onPlot, onClose }: Props): JSX.Element {
             ✕
           </span>
         </div>
-        <div className="ze-modal-body" style={{ padding: '10px 14px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0 10px' }}>
-            <span style={{ width: 100, fontSize: 12 }}>Output format:</span>
-            <select
-              className="ze-select"
+        <div
+          className="ze-modal-body"
+          style={{ padding: '10px 14px', maxHeight: '72vh', overflow: 'auto' }}
+        >
+          <div style={row}>
+            <span style={lab}>Output directory:</span>
+            <input
+              className="ze-search"
               style={{ flex: 1 }}
-              value={format}
-              onChange={(e) => setFormat(e.target.value as PlotFormat)}
-            >
+              disabled
+              placeholder="Browser downloads folder"
+              title="Plots download through the browser; the target folder is your download setting."
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+            <fieldset style={{ ...group, flex: '0 0 150px' }}>
+              <legend style={legend}>Output Format</legend>
               {FORMATS.map((f) => (
-                <option key={f.id} value={f.id}>
+                <label
+                  key={f.id}
+                  style={{
+                    display: 'block',
+                    margin: '4px 0',
+                    fontSize: 12.5,
+                    opacity: f.disabled ? 0.45 : 1,
+                  }}
+                  title={f.disabled ? 'Not supported in the browser yet' : undefined}
+                >
+                  <input
+                    type="radio"
+                    name="pfmt"
+                    checked={format === f.id}
+                    disabled={f.disabled}
+                    onChange={() => setFormat(f.id as PlotFormat)}
+                  />{' '}
                   {f.label}
-                </option>
+                </label>
               ))}
-            </select>
+            </fieldset>
+
+            <fieldset style={{ ...group, flex: 1 }}>
+              <legend style={legend}>Options</legend>
+              <div style={row}>
+                <span style={lab}>Page size:</span>
+                <select className="ze-select" style={{ flex: 1 }} disabled value="schematic">
+                  <option value="schematic">Schematic size</option>
+                </select>
+              </div>
+              <label style={{ display: 'block', margin: '5px 0', fontSize: 12.5 }}>
+                <input
+                  type="checkbox"
+                  checked={drawingSheet}
+                  onChange={(e) => setDrawingSheet(e.target.checked)}
+                />{' '}
+                Plot drawing sheet
+              </label>
+              <div style={row}>
+                <span style={lab}>Output mode:</span>
+                <select
+                  className="ze-select"
+                  style={{ flex: 1 }}
+                  value={color ? 'color' : 'bw'}
+                  onChange={(e) => setColor(e.target.value === 'color')}
+                >
+                  <option value="color">Color</option>
+                  <option value="bw">Black and White</option>
+                </select>
+              </div>
+              <div style={row}>
+                <span style={lab}>Color theme:</span>
+                <select className="ze-select" style={{ flex: 1 }} disabled value="cur">
+                  <option value="cur">{themeName ?? 'KiCad Default'}</option>
+                </select>
+              </div>
+              <label style={{ display: 'block', margin: '5px 0', fontSize: 12.5 }}>
+                <input
+                  type="checkbox"
+                  checked={background}
+                  disabled={!color}
+                  onChange={(e) => setBackground(e.target.checked)}
+                  title="Plot the background color if the output format supports it"
+                />{' '}
+                Plot background color
+              </label>
+              <div style={row}>
+                <span style={lab}>Minimum line width:</span>
+                <input className="ze-search" style={{ width: 70 }} disabled value="0.1524" />
+                <span className="ze-muted" style={{ fontSize: 11 }}>
+                  mm
+                </span>
+              </div>
+            </fieldset>
           </div>
-          <div style={{ margin: '4px 0' }}>
-            <label style={{ display: 'block', margin: '4px 0' }}>
-              <input type="radio" name="pmode" checked={color} onChange={() => setColor(true)} />{' '}
-              Color
+
+          {format === 'pdf' && (
+            <fieldset style={group}>
+              <legend style={legend}>PDF Options</legend>
+              {[
+                'Generate property popups',
+                'Generate clickable links for hierarchical elements',
+                'Generate metadata from AUTHOR & SUBJECT variables',
+              ].map((l) => (
+                <label
+                  key={l}
+                  style={{ display: 'block', margin: '4px 0', fontSize: 12.5, opacity: 0.45 }}
+                  title="Not supported in the browser yet"
+                >
+                  <input type="checkbox" disabled /> {l}
+                </label>
+              ))}
+            </fieldset>
+          )}
+          {format === 'png' && (
+            <fieldset style={group}>
+              <legend style={legend}>PNG Options</legend>
+              <div style={{ ...row, opacity: 0.45 }} title="Fixed raster resolution for now">
+                <span style={{ fontSize: 12 }}>DPI:</span>
+                <input className="ze-search" style={{ width: 70 }} disabled value="600" />
+                <label style={{ fontSize: 12.5 }}>
+                  <input type="checkbox" disabled checked readOnly /> Anti-alias
+                </label>
+              </div>
+            </fieldset>
+          )}
+
+          <fieldset style={group}>
+            <legend style={legend}>Other Options</legend>
+            <label
+              style={{ display: 'block', margin: '4px 0', fontSize: 12.5, opacity: 0.45 }}
+              title="The browser handles downloaded files"
+            >
+              <input type="checkbox" disabled /> Open file after plot
             </label>
-            <label style={{ display: 'block', margin: '4px 0' }}>
-              <input type="radio" name="pmode" checked={!color} onChange={() => setColor(false)} />{' '}
-              Black and white
-            </label>
-          </div>
-          <label style={{ display: 'block', margin: '8px 0 4px' }}>
-            <input
-              type="checkbox"
-              checked={drawingSheet}
-              onChange={(e) => setDrawingSheet(e.target.checked)}
-            />{' '}
-            Plot drawing sheet (border and title block)
-          </label>
-          <label style={{ display: 'block', margin: '4px 0' }}>
-            <input
-              type="checkbox"
-              checked={background}
-              disabled={!color}
-              onChange={(e) => setBackground(e.target.checked)}
-            />{' '}
-            Plot background color
-          </label>
+          </fieldset>
         </div>
         <div className="ze-modal-footer">
           <button className="ze-btn" onClick={onClose}>
             Cancel
           </button>
+          <span style={{ flex: 1 }} />
+          <button
+            className="ze-btn"
+            onClick={() => onPlot(format, { color, drawingSheet, background }, false)}
+          >
+            Plot Current Page
+          </button>
           <button
             className="ze-btn primary"
-            onClick={() => onPlot(format, { color, drawingSheet, background })}
+            onClick={() => onPlot(format, { color, drawingSheet, background }, true)}
           >
-            Plot
+            Plot All Pages
           </button>
         </div>
       </div>

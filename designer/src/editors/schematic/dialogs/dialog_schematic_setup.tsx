@@ -36,6 +36,7 @@ type PageId =
   | 'pinmap'
   | 'netclasses'
   | 'buses'
+  | 'netChains'
   | 'textVars'
   | 'embedded';
 
@@ -53,7 +54,7 @@ interface PageNode {
 const PAGES: PageNode[] = [
   { label: 'General', section: true, depth: 0 },
   { id: 'formatting', label: 'Formatting', disabled: true, depth: 1 },
-  { id: 'annotation', label: 'Annotation Options', disabled: true, depth: 1 },
+  { id: 'annotation', label: 'Annotation', disabled: true, depth: 1 },
   { id: 'fieldTemplates', label: 'Field Name Templates', depth: 1 },
   { id: 'bomPresets', label: 'BOM Presets', disabled: true, depth: 1 },
   { label: 'Electrical Rules', section: true, depth: 0 },
@@ -62,6 +63,7 @@ const PAGES: PageNode[] = [
   { label: 'Project', section: true, depth: 0 },
   { id: 'netclasses', label: 'Net Classes', disabled: true, depth: 1 },
   { id: 'buses', label: 'Bus Alias Definitions', disabled: true, depth: 1 },
+  { id: 'netChains', label: 'Net Chains', disabled: true, depth: 1 },
   { id: 'textVars', label: 'Text Variables', depth: 1 },
   { label: 'Schematic Data', section: true, depth: 0 },
   { id: 'embedded', label: 'Embedded Files', disabled: true, depth: 1 },
@@ -69,18 +71,20 @@ const PAGES: PageNode[] = [
 
 interface Props {
   value: SchematicSetup;
+  /** Page to open on (ShowSchematicSetupDialog's aInitialPage). */
+  initialPage?: PageId;
   onOk: (next: SchematicSetup) => void;
   onCancel: () => void;
 }
 
-export function DialogSchematicSetup({ value, onOk, onCancel }: Props): JSX.Element {
+export function DialogSchematicSetup({ value, initialPage, onOk, onCancel }: Props): JSX.Element {
   // A working copy: edits apply on OK, discard on Cancel (KiCad's TransferData).
   const [s, setS] = useState<SchematicSetup>(() => ({
     erc: { severities: { ...value.erc.severities }, pinMap: value.erc.pinMap.map((r) => [...r]) },
     textVars: value.textVars.map((v) => ({ ...v })),
     fieldTemplates: value.fieldTemplates.map((t) => ({ ...t })),
   }));
-  const [page, setPage] = useState<PageId>('severities');
+  const [page, setPage] = useState<PageId>(initialPage ?? 'severities');
 
   const setErc = (erc: ErcSettings): void => setS((cur) => ({ ...cur, erc }));
 

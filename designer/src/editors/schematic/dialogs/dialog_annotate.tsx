@@ -92,6 +92,10 @@ export function DialogAnnotate({ hasSelection, onAnnotate, onClear, onClose }: P
               <input type="radio" checked={reset} onChange={() => setReset(true)} />
               Reset existing annotations
             </label>
+            <label className="disabled">
+              <input type="checkbox" disabled />
+              Regroup symbol units
+            </label>
           </fieldset>
 
           <fieldset>
@@ -118,7 +122,7 @@ export function DialogAnnotate({ hasSelection, onAnnotate, onClear, onClose }: P
                 checked={algo === 'sheet_100'}
                 onChange={() => setAlgo('sheet_100')}
               />
-              First free after sheet number × 100
+              First free after sheet number X 100
             </label>
             <label>
               <input
@@ -126,7 +130,7 @@ export function DialogAnnotate({ hasSelection, onAnnotate, onClear, onClose }: P
                 checked={algo === 'sheet_1000'}
                 onChange={() => setAlgo('sheet_1000')}
               />
-              First free after sheet number × 1000
+              First free after sheet number X 1000
             </label>
           </fieldset>
         </div>
