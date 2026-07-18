@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { iuToMM } from '@ziroeda/common';
-import type { ErcViolation } from '@ziroeda/eeschema';
+import { ercExclusionKey, type ErcViolation } from '@ziroeda/eeschema';
 
 /**
  * Electrical Rules Checker, after KiCad's DIALOG_ERC (dialog_erc_base.cpp):
@@ -32,6 +32,11 @@ interface Props {
   /** Delete Marker / Delete All Markers (index into `violations`). */
   onDelete: (index: number) => void;
   onDeleteAll: () => void;
+  /** Exclusion signatures (SCHEMATIC::m_ercExclusions); a marker whose key is
+   *  in the set is excluded — shown only under the Exclusions filter. */
+  excluded: ReadonlySet<string>;
+  /** Exclude Marker / drop the exclusion (SCH_INSPECTION_TOOL::ExcludeMarker). */
+  onToggleExclude: (v: ErcViolation) => void;
   /** "Edit ignored tests" link: opens Schematic Setup > Violation Severity. */
   onEditSeverities?: () => void;
   onClose: () => void;
@@ -50,19 +55,29 @@ export function ErcDialog({
   onLocate,
   onDelete,
   onDeleteAll,
+  excluded,
+  onToggleExclude,
   onEditSeverities,
   onClose,
 }: Props): JSX.Element {
   const [tab, setTab] = useState<'violations' | 'ignored'>('violations');
   const [selected, setSelected] = useState<number | null>(null);
 
-  const errors = violations.filter((v) => v.severity === 'error').length;
-  const warnings = violations.length - errors;
+  const isExcl = (v: ErcViolation): boolean => excluded.has(ercExclusionKey(v));
+  // Badges tally by category, excluding the excluded ones (as KiCad does).
+  const active = violations.filter((v) => !isExcl(v));
+  const errors = active.filter((v) => v.severity === 'error').length;
+  const warnings = active.length - errors;
+  const exclusionCount = violations.length - active.length;
   const all = filters.errors && filters.warnings && filters.exclusions;
 
+  // An excluded marker shows only under the Exclusions filter; an active one
+  // shows per its severity filter (DIALOG_ERC::OnSeverity display rules).
   const shown = violations
     .map((v, i) => ({ v, i }))
-    .filter(({ v }) => (v.severity === 'error' ? filters.errors : filters.warnings));
+    .filter(({ v }) =>
+      isExcl(v) ? filters.exclusions : v.severity === 'error' ? filters.errors : filters.warnings,
+    );
 
   // DIALOG_ERC::OnSaveReport — a plain-text .rpt like ERC_REPORT::GetTextReport.
   const saveReport = (): void => {
@@ -125,19 +140,31 @@ export function ErcDialog({
           {shown.map(({ v, i }) => (
             <div
               key={i}
-              className={`ze-erc-row ${v.severity}${selected === i ? ' selected' : ''}`}
+              className={`ze-erc-row ${v.severity}${selected === i ? ' selected' : ''}${
+                isExcl(v) ? ' excluded' : ''
+              }`}
               onClick={() => {
                 setSelected(i);
                 onLocate(v);
               }}
             >
-              <span className="sev">⏺</span>
+              <span className="sev">{isExcl(v) ? '⊘' : '⏺'}</span>
               <span className="msg">
                 {v.message}
                 <span className="pos">
                   @({fmt(v.at.x)}, {fmt(v.at.y)})
                 </span>
               </span>
+              <button
+                className="ze-erc-exclude"
+                title={isExcl(v) ? 'Remove exclusion' : 'Exclude this violation'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleExclude(v);
+                }}
+              >
+                {isExcl(v) ? 'Include' : 'Exclude'}
+              </button>
             </div>
           ))}
         </div>
@@ -199,7 +226,7 @@ export function ErcDialog({
           />
           Exclusions
         </label>
-        <span className="badge">0</span>
+        <span className="badge">{exclusionCount}</span>
         <span className="grow" />
         <button className="ze-btn" onClick={saveReport}>
           Save...

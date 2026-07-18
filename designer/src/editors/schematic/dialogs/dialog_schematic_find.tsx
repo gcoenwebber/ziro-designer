@@ -148,8 +148,12 @@ export function DialogSchematicFind({
             />
             Wildcards
           </label>
-          <label className="disabled" title="Not supported yet" style={{ opacity: 0.45 }}>
-            <input type="checkbox" disabled />
+          <label>
+            <input
+              type="checkbox"
+              checked={data.matchMode === 'regex'}
+              onChange={(e) => setMode('regex', e.target.checked)}
+            />
             Regular Expression
           </label>
           <label>

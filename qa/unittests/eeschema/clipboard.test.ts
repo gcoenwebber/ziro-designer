@@ -165,4 +165,38 @@ describe('copy/paste (doCopy / Paste port)', () => {
     const next = pasteItems(payload).apply(doc);
     expect(next.libSymbols.length).toBe(doc.libSymbols.length);
   });
+
+  // PASTE_MODE (DIALOG_PASTE_SPECIAL): keep vs clear reference designators.
+  it("paste mode 'keep' preserves the copied reference even when duplicated", () => {
+    const doc = sch();
+    const sym = doc.symbols[0]!;
+    const ref = sym.fields.find((f) => f.key === 'Reference')!.value;
+    const text = copySelectionText(doc, new Set([refId('symbol', sym.uuid, 0)]));
+    const payload = parsePastedText(text, doc, 'keep')!;
+    expect(payload.batch.symbols[0]!.fields.find((f) => f.key === 'Reference')!.value).toBe(ref);
+  });
+
+  it("paste mode 'remove' clears the reference to its unannotated form", () => {
+    const doc = sch();
+    const sym = doc.symbols[0]!;
+    const text = copySelectionText(doc, new Set([refId('symbol', sym.uuid, 0)]));
+    const payload = parsePastedText(text, doc, 'remove')!;
+    expect(payload.batch.symbols[0]!.fields.find((f) => f.key === 'Reference')!.value).toBe('J?');
+  });
+});
+
+describe('getSelectedItemsAsText (CopyAsText port)', () => {
+  it('joins the shown text of selected labels/text', async () => {
+    const { getSelectedItemsAsText } = await import(
+      '@ziroeda/eeschema/src/tools/sch_tool_utils.js'
+    );
+    const src = `(kicad_sch (version 20230121) (generator eeschema) (lib_symbols)
+      (label "NET_A" (at 10 10 0) (uuid "l-1"))
+      (label "NET_B" (at 20 20 0) (uuid "l-2"))
+      (text "a note" (at 30 30 0) (uuid "t-1")))`;
+    const doc = readSchematic(parse(src));
+    // Both labels selected -> newline-joined shown text.
+    const text = getSelectedItemsAsText(doc, new Set(['l-1', 'l-2']));
+    expect(text).toBe('NET_A\nNET_B');
+  });
 });

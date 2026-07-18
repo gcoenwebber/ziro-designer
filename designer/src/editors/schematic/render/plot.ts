@@ -25,6 +25,10 @@ export interface PlotOpts {
   drawingSheet: boolean;
   /** Fill the page with the theme background colour (m_useBackgroundColor). */
   background: boolean;
+  /** Raster resolution for PNG/PDF output (the PNG Options DPI; default 300). */
+  dpi?: number;
+  /** Pen width (IU) for zero-width strokes ("Minimum line width"). */
+  defaultPenIU?: number;
 }
 
 /** An all-black-on-white theme for monochrome output (KiCad's B&W plot). */
@@ -86,6 +90,7 @@ function outputRenderOpts(opts: PlotOpts): RenderOpts {
     showHiddenFields: false,
     showPageLimits: false,
     showDrawingSheet: opts.drawingSheet,
+    defaultPenIU: opts.defaultPenIU,
     selectionThicknessMils: 0,
     highlightThicknessMils: 0,
     grid: { show: false, sizeIU: 12700, style: 'dots', lineWidthPx: 1, minSpacingPx: 10 },
@@ -141,14 +146,14 @@ export function downloadBlob(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
-/** Plot to PNG (raster) and download. */
+/** Plot to PNG (raster) and download at the requested DPI (default 300). */
 export async function plotPng(
   sch: Schematic,
   base: Theme,
   opts: PlotOpts,
   name: string,
 ): Promise<void> {
-  const canvas = renderSheetToCanvas(sch, base, opts, 300);
+  const canvas = renderSheetToCanvas(sch, base, opts, opts.dpi ?? 300);
   const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'));
   if (blob) downloadBlob(blob, `${name}.png`);
 }
@@ -160,7 +165,7 @@ export async function plotPdf(
   opts: PlotOpts,
   name: string,
 ): Promise<void> {
-  const canvas = renderSheetToCanvas(sch, base, opts, 300);
+  const canvas = renderSheetToCanvas(sch, base, opts, opts.dpi ?? 300);
   const page = pageIU(sch);
   // PDF user space is 72 pt/inch; page size in points from the mm page size.
   const ptW = (page.w / MM / 25.4) * 72;

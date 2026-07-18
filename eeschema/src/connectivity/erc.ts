@@ -75,6 +75,15 @@ export interface ErcViolation {
   items: string[];
 }
 
+/**
+ * An exclusion signature for a violation (SCH_MARKER::SerializeToString): the
+ * settings key, position, and the involved item ids — enough to recognise the
+ * same marker on a later run so its exclusion persists across ERC runs.
+ */
+export function ercExclusionKey(v: Pick<ErcViolation, 'code' | 'at' | 'items'>): string {
+  return `${v.code}|${v.at.x}|${v.at.y}|${v.items[0] ?? ''}|${v.items[1] ?? ''}`;
+}
+
 // The active ERC configuration for the current run (set at the top of runErc).
 let g_settings: ErcSettings = defaultErcSettings();
 

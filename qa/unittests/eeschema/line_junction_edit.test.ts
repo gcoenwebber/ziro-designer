@@ -48,3 +48,43 @@ describe('junction diameter edit', () => {
     expect(serializeSchematic(after)).toContain('(diameter 0.9)');
   });
 });
+
+// DIALOG_WIRE_BUS_PROPERTIES / DIALOG_JUNCTION_PROPS colour swatch: an explicit
+// (color r g b a) writes and reads back losslessly.
+describe('stroke and junction colour', () => {
+  it('writes a wire stroke colour and reads it back', () => {
+    const doc = load();
+    const after = replaceLine(0, {
+      ...doc.lines[0]!,
+      stroke: { width: 0, type: 'default', color: [255, 0, 0, 1] },
+    }).apply(doc);
+    expect(serializeSchematic(after)).toContain('(color 255 0 0 1)');
+    const reread = readSchematic(parse(serializeSchematic(after)));
+    expect(reread.lines[0]!.stroke!.color).toEqual([255, 0, 0, 1]);
+  });
+
+  it('clears a wire stroke colour back to (0 0 0 0)', () => {
+    const withColor = readSchematic(
+      parse(`(kicad_sch (version 20231120) (generator "test")
+        (wire (pts (xy 50 50) (xy 80 50)) (stroke (width 0) (type default) (color 1 2 3 1)) (uuid "w-1")))`),
+    );
+    expect(withColor.lines[0]!.stroke!.color).toEqual([1, 2, 3, 1]);
+    const cleared = replaceLine(0, {
+      ...withColor.lines[0]!,
+      stroke: { width: 0, type: 'default' },
+    }).apply(withColor);
+    const reread = readSchematic(parse(serializeSchematic(cleared)));
+    expect(reread.lines[0]!.stroke!.color).toBeUndefined();
+  });
+
+  it('writes a junction colour and reads it back', () => {
+    const doc = load();
+    const after = replaceJunction(0, {
+      ...doc.junctions[0]!,
+      color: [0, 128, 255, 1],
+    }).apply(doc);
+    expect(serializeSchematic(after)).toContain('(color 0 128 255 1)');
+    const reread = readSchematic(parse(serializeSchematic(after)));
+    expect(reread.junctions[0]!.color).toEqual([0, 128, 255, 1]);
+  });
+});

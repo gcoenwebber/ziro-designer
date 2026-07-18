@@ -18,3 +18,4 @@ export * from './annotate.js';
 export * from './sch_sheet_path.js';
 export * from './page_settings.js';
 export * from './sch_group_tool.js';
+export * from './sch_tool_utils.js';

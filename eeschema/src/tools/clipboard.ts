@@ -173,11 +173,33 @@ function setFieldValue(f: SchField, value: string): SchField {
 }
 
 /**
+ * PASTE_MODE (common/tool/actions.h): how pasted reference designators are
+ * handled. 'unique' re-annotates duplicates (UNIQUE_ANNOTATIONS, the default),
+ * 'keep' leaves them as copied (KEEP_ANNOTATIONS), 'remove' clears every
+ * pasted designator back to its `X?` form (REMOVE_ANNOTATIONS).
+ */
+export type PasteMode = 'unique' | 'keep' | 'remove';
+
+/** REMOVE_ANNOTATIONS: clear the reference back to its unannotated `X?` form. */
+function clearAnnotation(sym: SchSymbol): SchSymbol {
+  const refField = sym.fields.find((f) => f.key === 'Reference');
+  if (!refField || refField.value.endsWith('?')) return sym;
+  const { prefix } = splitRef(refField.value);
+  const newRef = `${prefix || refField.value}?`;
+  const fields = sym.fields.map((f) => (f.key === 'Reference' ? setFieldValue(f, newRef) : f));
+  return { ...sym, fields };
+}
+
+/**
  * Parse clipboard text into a paste payload. Accepts KiCad's bare item sequence
  * (the clipboard format), a whole `(kicad_sch ...)` document, or — failing both —
  * returns the content as a text item exactly as KiCad's Paste() fallback does.
  */
-export function parsePastedText(text: string, existing: Schematic): PastePayload | null {
+export function parsePastedText(
+  text: string,
+  existing: Schematic,
+  mode: PasteMode = 'unique',
+): PastePayload | null {
   const trimmed = text.trim();
   if (trimmed === '') return null;
 
@@ -225,6 +247,8 @@ export function parsePastedText(text: string, existing: Schematic): PastePayload
     const uuid = (childNamed(source, 'uuid')!.items[1] as { value: string }).value;
     // Re-read fields from the fresh source so field.source identity stays aligned.
     const withIds: SchSymbol = { ...s, uuid, source };
+    if (mode === 'keep') return withIds;
+    if (mode === 'remove') return clearAnnotation(withIds);
     return reannotate(withIds, taken);
   });
   const reuuid = <T extends { source: SList; uuid?: string }>(item: T): T => {
