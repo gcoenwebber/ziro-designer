@@ -1282,6 +1282,92 @@ body {
 .ze-erc-footer .grow {
   flex: 1;
 }
+.ze-erc-footer .chk {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.ze-erc-footer .badge {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 9px;
+  text-align: center;
+  font-size: 11px;
+  background: #5a5d61;
+  color: #fff;
+}
+.ze-erc-footer .badge.err {
+  background: #e6090d;
+}
+.ze-erc-footer .badge.warn {
+  background: #d19200;
+}
+/* Violations / Ignored Tests notebook tabs (DIALOG_ERC m_notebook) */
+.ze-erc-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--chrome-border);
+}
+.ze-erc-tabs .tab {
+  padding: 5px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  color: #9a9ca0;
+}
+.ze-erc-tabs .tab.active {
+  color: var(--chrome-fg);
+  background: var(--chrome-hover);
+  border-color: var(--chrome-border);
+}
+.ze-erc-row.selected {
+  background: var(--accent, #2f65c0);
+  color: #fff;
+}
+.ze-erc-row .pos {
+  margin-left: 8px;
+  color: #9a9ca0;
+  font-size: 11.5px;
+}
+.ze-erc-row.selected .pos {
+  color: #d9dbde;
+}
+.ze-erc-link {
+  display: block;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  color: #6ea8fe;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.ze-erc-buttons {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border-top: 1px solid var(--chrome-border);
+}
+.ze-erc-buttons .grow {
+  flex: 1;
+}
+/* WX_INFOBAR-style warning strip (annotation incomplete) */
+.ze-infobar {
+  padding: 7px 12px;
+  font-size: 12.5px;
+  background: #4d3f14;
+  color: #ffd76e;
+  border-bottom: 1px solid var(--chrome-border);
+}
+.ze-infobar .lnk {
+  margin-left: 8px;
+  color: #6ea8fe;
+  cursor: pointer;
+  text-decoration: underline;
+}
 
 /* ---- Auth gate (sign-in / sign-up) ---- */
 .ze-auth {

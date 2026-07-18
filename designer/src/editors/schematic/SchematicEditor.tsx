@@ -39,6 +39,7 @@ import {
   type SchSearchData,
   type AnnotateOptions,
   runErc,
+  ERC_ITEMS,
   buildSheetTree,
   sheetFile,
   sheetName,
@@ -93,7 +94,7 @@ import {
 import { DialogSchematicFind } from './dialogs/dialog_schematic_find.js';
 import { DialogAnnotate } from './dialogs/dialog_annotate.js';
 import { DialogLineProperties } from './dialogs/dialog_line_properties.js';
-import { DialogPageSettings } from './dialogs/dialog_page_settings.js';
+import { DialogPageSettings, type PageExportFlags } from './dialogs/dialog_page_settings.js';
 import {
   DialogSchematicSetup,
   defaultSchematicSetup,
@@ -604,13 +605,50 @@ export function SchematicEditor({
   );
 
   // Page Settings (DIALOG_PAGES_SETTINGS::onOK): write paper + title block back
-  // through an undoable command.
+  // through an undoable command; fields with "Export to other sheets" checked
+  // are copied into every other sheet file (upstream's OnOkClick loop), via
+  // the same cross-document pattern as the bulk field edits.
   const applyPageSettings = useCallback(
-    (next: PageSettings) => {
+    (next: PageSettings, exports: PageExportFlags) => {
       runCommand(setPageSettingsCommand(next));
+      const anyExport =
+        exports.paper ||
+        exports.date ||
+        exports.rev ||
+        exports.title ||
+        exports.company ||
+        exports.comments.some(Boolean);
+      if (anyExport) {
+        const changedFiles: PickedFile[] = [];
+        for (const [file, target] of project.current.docs) {
+          if (file === currentFile) continue;
+          const cur = getPageSettings(target);
+          const merged: PageSettings = {
+            paper: exports.paper ? next.paper : cur.paper,
+            date: exports.date ? next.date : cur.date,
+            rev: exports.rev ? next.rev : cur.rev,
+            title: exports.title ? next.title : cur.title,
+            company: exports.company ? next.company : cur.company,
+            comments: cur.comments.map((c, i) =>
+              exports.comments[i] ? (next.comments[i] ?? c) : c,
+            ),
+          };
+          if (!histories.current.has(file)) histories.current.set(file, new History());
+          const updated = histories.current
+            .get(file)!
+            .execute(target, withCleanup(setPageSettingsCommand(merged)));
+          project.current.docs.set(file, updated);
+          try {
+            changedFiles.push({ name: file, text: serializeSchematic(updated) });
+          } catch {
+            /* skip a bad sheet */
+          }
+        }
+        if (changedFiles.length) onProjectChange?.(changedFiles);
+      }
       setPageSettingsOpen(false);
     },
-    [runCommand],
+    [runCommand, currentFile, onProjectChange],
   );
 
   // A base file name for a printed/plotted output (KiCad names plots after the
@@ -660,17 +698,22 @@ export function SchematicEditor({
   );
 
   // Plot (DIALOG_PLOT_SCHEMATIC): write the chosen file format for download.
+  // "Plot All Pages" (the upstream OK button) plots every sheet file to its
+  // own download; "Plot Current Page" (wxID_APPLY) plots just this sheet.
   const doPlot = useCallback(
-    (format: PlotFormat, opts: PlotOpts) => {
-      if (doc) {
-        const name = outputBaseName();
-        if (format === 'svg') plotSvg(doc, theme, opts, name);
-        else if (format === 'png') void plotPng(doc, theme, opts, name);
-        else void plotPdf(doc, theme, opts, name);
-      }
+    (format: PlotFormat, opts: PlotOpts, allPages: boolean) => {
+      const one = (d: Schematic, name: string): void => {
+        if (format === 'svg') plotSvg(d, theme, opts, name);
+        else if (format === 'png') void plotPng(d, theme, opts, name);
+        else void plotPdf(d, theme, opts, name);
+      };
+      if (allPages) {
+        for (const [file, d] of liveDocs())
+          one(d, file.replace(/\.kicad_sch$/i, '') || outputBaseName());
+      } else if (doc) one(doc, outputBaseName());
       setPlotOpen(false);
     },
-    [doc, theme, outputBaseName],
+    [doc, theme, outputBaseName, liveDocs],
   );
   useEffect(() => {
     // Changed search settings restart the scan (upstream m_foundItemHighlight reset).
@@ -2127,8 +2170,30 @@ export function SchematicEditor({
           {ercResult !== null && (
             <ErcDialog
               violations={ercResult}
+              ignoredTests={ERC_ITEMS.filter(
+                (it) => setup.erc.severities[it.code] === 'ignore',
+              ).map((it) => it.title)}
+              filters={{
+                errors: es.appearance.show_erc_errors,
+                warnings: es.appearance.show_erc_warnings,
+                exclusions: es.appearance.show_erc_exclusions,
+              }}
+              onFilterChange={(f) =>
+                settings.updateEeschema((s) => {
+                  s.appearance.show_erc_errors = f.errors;
+                  s.appearance.show_erc_warnings = f.warnings;
+                  s.appearance.show_erc_exclusions = f.exclusions;
+                })
+              }
+              unannotated={doc?.symbols.some((s) =>
+                (s.fields.find((f) => f.key === 'Reference')?.value ?? '').endsWith('?'),
+              )}
+              onShowAnnotate={() => setAnnotateOpen(true)}
               onRun={runErcNow}
               onLocate={locateViolation}
+              onDelete={(i) => setErcResult((r) => (r ? r.filter((_, idx) => idx !== i) : r))}
+              onDeleteAll={() => setErcResult([])}
+              onEditSeverities={() => setSetupOpen(true)}
               onClose={() => setErcResult(null)}
             />
           )}
@@ -2156,12 +2221,29 @@ export function SchematicEditor({
           {pageSettingsOpen && doc && (
             <DialogPageSettings
               value={getPageSettings(doc)}
+              sheetCount={flatSheets.length}
+              sheetNumber={Number(pageNumberOf(currentPath)) || 1}
               onOk={applyPageSettings}
               onCancel={() => setPageSettingsOpen(false)}
             />
           )}
-          {printOpen && <DialogPrint onPrint={doPrint} onClose={() => setPrintOpen(false)} />}
-          {plotOpen && <DialogPlot onPlot={doPlot} onClose={() => setPlotOpen(false)} />}
+          {printOpen && (
+            <DialogPrint
+              onPrint={doPrint}
+              onPageSetup={() => {
+                setPrintOpen(false);
+                setPageSettingsOpen(true);
+              }}
+              onClose={() => setPrintOpen(false)}
+            />
+          )}
+          {plotOpen && (
+            <DialogPlot
+              themeName={es.appearance.color_theme}
+              onPlot={doPlot}
+              onClose={() => setPlotOpen(false)}
+            />
+          )}
           {setupOpen && (
             <DialogSchematicSetup
               value={setup}

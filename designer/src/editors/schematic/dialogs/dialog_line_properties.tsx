@@ -8,8 +8,16 @@
 import { useState, type JSX } from 'react';
 import { iuToMM, mmToIU } from '@ziroeda/common';
 
-/** KiCad line styles (`(stroke (type ..))`), in the dialog's dropdown order. */
-const LINE_STYLES = ['default', 'solid', 'dash', 'dot', 'dash_dot', 'dash_dot_dot'] as const;
+/** KiCad line styles (`(stroke (type ..))`) with the upstream display names
+ *  (common/stroke_params.cpp lineTypeNames), in the dialog's dropdown order. */
+const LINE_STYLES: { value: string; label: string }[] = [
+  { value: 'default', label: 'Default' },
+  { value: 'solid', label: 'Solid' },
+  { value: 'dash', label: 'Dashed' },
+  { value: 'dot', label: 'Dotted' },
+  { value: 'dash_dot', label: 'Dash-Dot' },
+  { value: 'dash_dot_dot', label: 'Dash-Dot-Dot' },
+];
 
 interface WireProps {
   kind: 'wire';
@@ -52,7 +60,7 @@ export function DialogLineProperties(props: WireProps | JunctionProps): JSX.Elem
           {props.kind === 'wire' ? (
             <>
               <label className="row">
-                <span>Width (mm)</span>
+                <span>Width:</span>
                 <input
                   className="ze-search"
                   autoFocus
@@ -63,36 +71,58 @@ export function DialogLineProperties(props: WireProps | JunctionProps): JSX.Elem
                     if (e.key === 'Enter') submit();
                   }}
                 />
+                <span className="ze-muted" style={{ fontSize: 11 }}>
+                  mm
+                </span>
+              </label>
+              <label className="row" style={{ opacity: 0.45 }} title="Not supported yet">
+                <span>Color:</span>
+                <input className="ze-search" disabled placeholder="Schematic Editor colors" />
               </label>
               <label className="row">
-                <span>Style</span>
+                <span>Style:</span>
                 <select
                   className="ze-select"
                   value={style}
                   onChange={(e) => setStyle(e.target.value)}
                 >
                   {LINE_STYLES.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
+                    <option key={s.value} value={s.value}>
+                      {s.label}
                     </option>
                   ))}
                 </select>
               </label>
+              <div className="ze-muted" style={{ fontSize: 11, marginTop: 4 }}>
+                Set width to 0 to use schematic's default line width.
+              </div>
             </>
           ) : (
-            <label className="row">
-              <span>Diameter (mm)</span>
-              <input
-                className="ze-search"
-                autoFocus
-                value={diameter}
-                onChange={(e) => setDiameter(e.target.value)}
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.key === 'Enter') submit();
-                }}
-              />
-            </label>
+            <>
+              <label className="row">
+                <span>Diameter:</span>
+                <input
+                  className="ze-search"
+                  autoFocus
+                  value={diameter}
+                  onChange={(e) => setDiameter(e.target.value)}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter') submit();
+                  }}
+                />
+                <span className="ze-muted" style={{ fontSize: 11 }}>
+                  mm
+                </span>
+              </label>
+              <label className="row" style={{ opacity: 0.45 }} title="Not supported yet">
+                <span>Color:</span>
+                <input className="ze-search" disabled placeholder="Schematic Editor colors" />
+              </label>
+              <div className="ze-muted" style={{ fontSize: 11, marginTop: 4 }}>
+                Set diameter to 0 to use schematic's default junction dot size.
+              </div>
+            </>
           )}
         </div>
         <div className="ze-modal-footer">
