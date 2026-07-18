@@ -19,17 +19,31 @@ const LINE_STYLES: { value: string; label: string }[] = [
   { value: 'dash_dot_dot', label: 'Dash-Dot-Dot' },
 ];
 
+/** Item colour as stored: [r, g, b] 0-255 plus alpha 0-1; unset = layer colour. */
+export type ItemColor = readonly [number, number, number, number];
+
+const toHex = (c: ItemColor): string =>
+  `#${[c[0], c[1], c[2]].map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+const fromHex = (h: string): ItemColor => [
+  Number.parseInt(h.slice(1, 3), 16),
+  Number.parseInt(h.slice(3, 5), 16),
+  Number.parseInt(h.slice(5, 7), 16),
+  1,
+];
+
 interface WireProps {
   kind: 'wire';
   widthIU: number;
   style: string;
-  onOk: (widthIU: number, style: string) => void;
+  color?: ItemColor;
+  onOk: (widthIU: number, style: string, color?: ItemColor) => void;
   onCancel: () => void;
 }
 interface JunctionProps {
   kind: 'junction';
   diameterIU: number;
-  onOk: (diameterIU: number) => void;
+  color?: ItemColor;
+  onOk: (diameterIU: number, color?: ItemColor) => void;
   onCancel: () => void;
 }
 
@@ -38,11 +52,39 @@ export function DialogLineProperties(props: WireProps | JunctionProps): JSX.Elem
   const [width, setWidth] = useState(props.kind === 'wire' ? mm(props.widthIU) : '0');
   const [style, setStyle] = useState(props.kind === 'wire' ? props.style : 'default');
   const [diameter, setDiameter] = useState(props.kind === 'junction' ? mm(props.diameterIU) : '0');
+  const [color, setColor] = useState<ItemColor | undefined>(props.color);
 
   const submit = (): void => {
-    if (props.kind === 'wire') props.onOk(mmToIU(Number(width) || 0), style);
-    else props.onOk(mmToIU(Number(diameter) || 0));
+    if (props.kind === 'wire') props.onOk(mmToIU(Number(width) || 0), style, color);
+    else props.onOk(mmToIU(Number(diameter) || 0), color);
   };
+
+  // COLOR_SWATCH: a picker plus "Clear color" back to the layer default.
+  const colorRow = (
+    <label className="row">
+      <span>Color:</span>
+      <input
+        type="color"
+        value={color ? toHex(color) : '#000000'}
+        onChange={(e) => setColor(fromHex(e.target.value))}
+        style={{ width: 44, height: 24, padding: 0, border: 'none', background: 'none' }}
+      />
+      <button
+        className="ze-btn"
+        style={{ fontSize: 11 }}
+        title="Clear color to use Schematic Editor colors."
+        disabled={!color}
+        onClick={() => setColor(undefined)}
+      >
+        Clear
+      </button>
+      {!color && (
+        <span className="ze-muted" style={{ fontSize: 11 }}>
+          (using Schematic Editor colors)
+        </span>
+      )}
+    </label>
+  );
 
   return (
     <div className="ze-modal-backdrop" onMouseDown={props.onCancel}>
@@ -75,10 +117,7 @@ export function DialogLineProperties(props: WireProps | JunctionProps): JSX.Elem
                   mm
                 </span>
               </label>
-              <label className="row" style={{ opacity: 0.45 }} title="Not supported yet">
-                <span>Color:</span>
-                <input className="ze-search" disabled placeholder="Schematic Editor colors" />
-              </label>
+              {colorRow}
               <label className="row">
                 <span>Style:</span>
                 <select
@@ -115,10 +154,7 @@ export function DialogLineProperties(props: WireProps | JunctionProps): JSX.Elem
                   mm
                 </span>
               </label>
-              <label className="row" style={{ opacity: 0.45 }} title="Not supported yet">
-                <span>Color:</span>
-                <input className="ze-search" disabled placeholder="Schematic Editor colors" />
-              </label>
+              {colorRow}
               <div className="ze-muted" style={{ fontSize: 11, marginTop: 4 }}>
                 Set diameter to 0 to use schematic's default junction dot size.
               </div>

@@ -1,5 +1,5 @@
 import type { Vec2 } from '@ziroeda/kimath';
-import { iuToMM } from '@ziroeda/common';
+import { iuToMM, mmToIU } from '@ziroeda/common';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { parse } from '@ziroeda/sexpr';
 import {
@@ -30,6 +30,8 @@ import {
   groupItemsCommand,
   ungroupItemsCommand,
   expandSelectionToGroups,
+  getSelectedItemsAsText,
+  type PasteMode,
   type PageSettings,
   findMatches,
   replaceCommand,
@@ -40,6 +42,7 @@ import {
   type AnnotateOptions,
   runErc,
   ERC_ITEMS,
+  ercExclusionKey,
   buildSheetTree,
   sheetFile,
   sheetName,
@@ -93,8 +96,9 @@ import {
 } from './sch_navigate_tool.js';
 import { DialogSchematicFind } from './dialogs/dialog_schematic_find.js';
 import { DialogAnnotate } from './dialogs/dialog_annotate.js';
-import { DialogLineProperties } from './dialogs/dialog_line_properties.js';
+import { DialogLineProperties, type ItemColor } from './dialogs/dialog_line_properties.js';
 import { DialogPageSettings, type PageExportFlags } from './dialogs/dialog_page_settings.js';
+import { DialogPasteSpecial } from './dialogs/dialog_paste_special.js';
 import {
   DialogSchematicSetup,
   defaultSchematicSetup,
@@ -106,6 +110,7 @@ import { DialogAssignFootprints } from './dialogs/dialog_assign_footprints.js';
 import { DialogPrint } from './dialogs/dialog_print.js';
 import { DialogPlot, type PlotFormat } from './dialogs/dialog_plot.js';
 import { printSheet, plotPng, plotSvg, plotPdf, type PlotOpts } from './render/plot.js';
+import { BUILTIN_THEMES } from './theme.js';
 import { LoadingOverlay, nextPaint } from '../../ui/LoadingOverlay.js';
 import type { ProgressSnapshot } from '../../ui/progress_reporter.js';
 import { PreferencesDialog } from '../../prefs/PreferencesDialog.js';
@@ -304,10 +309,13 @@ export function SchematicEditor({
     index: number;
     widthIU: number;
     style: string;
+    color?: ItemColor;
   } | null>(null);
-  const [junctionEdit, setJunctionEdit] = useState<{ index: number; diameterIU: number } | null>(
-    null,
-  );
+  const [junctionEdit, setJunctionEdit] = useState<{
+    index: number;
+    diameterIU: number;
+    color?: ItemColor;
+  } | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const [localToggles, setLocalToggles] = useState<Set<string>>(new Set(DEFAULT_TOGGLES));
   const [prefsOpen, setPrefsOpen] = useState(false);
@@ -578,6 +586,8 @@ export function SchematicEditor({
   const [pageSettingsOpen, setPageSettingsOpen] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
   const [plotOpen, setPlotOpen] = useState(false);
+  // Paste Special (DIALOG_PASTE_SPECIAL): pick the PASTE_MODE before pasting.
+  const [pasteSpecialOpen, setPasteSpecialOpen] = useState(false);
   // Schematic Setup (DIALOG_SCHEMATIC_SETUP): project-scoped settings, incl. the
   // ERC severities + pin-conflict map that the ERC checker reads.
   const [setupOpen, setSetupOpen] = useState(false);
@@ -659,10 +669,13 @@ export function SchematicEditor({
     return noExt || doc?.titleBlock?.title || 'schematic';
   }, [currentFile, fileName, doc]);
 
-  // Print (DIALOG_PRINT): render the current sheet and open the browser print flow.
+  // Print (DIALOG_PRINT): render the current sheet and open the browser print
+  // flow, optionally with a different colour theme (m_useColorTheme choice).
   const doPrint = useCallback(
-    (opts: PlotOpts) => {
-      if (doc) printSheet(doc, theme, opts, outputBaseName());
+    (opts: PlotOpts, themeId?: string) => {
+      const printTheme =
+        themeId && BUILTIN_THEMES[themeId] ? BUILTIN_THEMES[themeId]!.theme : theme;
+      if (doc) printSheet(doc, printTheme, opts, outputBaseName());
       setPrintOpen(false);
     },
     [doc, theme, outputBaseName],
@@ -700,12 +713,14 @@ export function SchematicEditor({
   // Plot (DIALOG_PLOT_SCHEMATIC): write the chosen file format for download.
   // "Plot All Pages" (the upstream OK button) plots every sheet file to its
   // own download; "Plot Current Page" (wxID_APPLY) plots just this sheet.
+  // `themeId` selects the plot colour theme (the "Color theme:" choice).
   const doPlot = useCallback(
-    (format: PlotFormat, opts: PlotOpts, allPages: boolean) => {
+    (format: PlotFormat, opts: PlotOpts, allPages: boolean, themeId?: string) => {
+      const plotTheme = themeId && BUILTIN_THEMES[themeId] ? BUILTIN_THEMES[themeId]!.theme : theme;
       const one = (d: Schematic, name: string): void => {
-        if (format === 'svg') plotSvg(d, theme, opts, name);
-        else if (format === 'png') void plotPng(d, theme, opts, name);
-        else void plotPdf(d, theme, opts, name);
+        if (format === 'svg') plotSvg(d, plotTheme, opts, name);
+        else if (format === 'png') void plotPng(d, plotTheme, opts, name);
+        else void plotPdf(d, plotTheme, opts, name);
       };
       if (allPages) {
         for (const [file, d] of liveDocs())
@@ -1055,10 +1070,15 @@ export function SchematicEditor({
               index: li,
               widthIU: l.stroke?.width ?? 0,
               style: l.stroke?.type ?? 'default',
+              color: l.stroke?.color,
             });
         } else if (d.junctions.some((j, i) => refId('junction', j.uuid, i) === id)) {
           const ji = d.junctions.findIndex((j, i) => refId('junction', j.uuid, i) === id);
-          setJunctionEdit({ index: ji, diameterIU: d.junctions[ji]!.diameter });
+          setJunctionEdit({
+            index: ji,
+            diameterIU: d.junctions[ji]!.diameter,
+            color: d.junctions[ji]!.color,
+          });
         } else {
           // Properties on a sheet opens its dialog (double-click enters it).
           const si = d.sheets.findIndex((s, i) => refId('sheet', s.uuid, i) === id);
@@ -1212,6 +1232,9 @@ export function SchematicEditor({
       showHiddenPins: es.appearance.show_hidden_pins,
       showHiddenFields: es.appearance.show_hidden_fields,
       showPageLimits: es.appearance.show_page_limits,
+      // Default pen for zero-width strokes = Schematic Setup > Formatting's
+      // "Default line width" (SCHEMATIC_SETTINGS::m_DefaultLineWidth), mils→IU.
+      defaultPenIU: mmToIU((setup.formatting.defaultLineWidthMils * 25.4) / 1000),
       selectionThicknessMils: es.selection.thickness,
       highlightThicknessMils: es.selection.highlight_thickness,
       grid: {
@@ -1365,16 +1388,18 @@ export function SchematicEditor({
   }, [doc, runCommand]);
 
   const commitLineEdit = useCallback(
-    (widthIU: number, style: string) => {
+    (widthIU: number, style: string, color?: ItemColor) => {
       setLineEdit((le) => {
         if (!le || !doc) return null;
         const orig = doc.lines[le.index];
         if (orig) {
-          const stroke = {
-            ...(orig.stroke ?? { width: 0, type: 'default' }),
+          const stroke: { width: number; type: string; color?: ItemColor } = {
+            ...(orig.stroke ?? {}),
             width: widthIU,
             type: style,
           };
+          if (color) stroke.color = color;
+          else delete stroke.color;
           runCommand(replaceLine(le.index, { ...orig, stroke }));
         }
         return null;
@@ -1384,11 +1409,15 @@ export function SchematicEditor({
   );
 
   const commitJunctionEdit = useCallback(
-    (diameterIU: number) => {
+    (diameterIU: number, color?: ItemColor) => {
       setJunctionEdit((je) => {
         if (!je || !doc) return null;
         const orig = doc.junctions[je.index];
-        if (orig) runCommand(replaceJunction(je.index, { ...orig, diameter: diameterIU }));
+        if (orig) {
+          const next = { ...orig, diameter: diameterIU, color };
+          if (!color) delete (next as { color?: ItemColor }).color;
+          runCommand(replaceJunction(je.index, next));
+        }
         return null;
       });
     },
@@ -1527,6 +1556,14 @@ export function SchematicEditor({
       // clicks can't synthesize a trusted paste event).
       else if (id === 'cut') document.execCommand('cut');
       else if (id === 'copy') document.execCommand('copy');
+      // ACTIONS::copyAsText (SCH_EDITOR_CONTROL::CopyAsText): the selected
+      // items' shown texts, newline-joined, to the system clipboard.
+      else if (id === 'copyAsText') {
+        if (doc && selection.size > 0) {
+          const text = getSelectedItemsAsText(doc, selection);
+          if (text) void navigator.clipboard?.writeText(text);
+        }
+      } else if (id === 'pasteSpecial') setPasteSpecialOpen(true);
       else if (id === 'paste')
         void navigator.clipboard?.readText().then((text) => {
           setDoc((d) => {
@@ -1642,7 +1679,9 @@ export function SchematicEditor({
         { sep: true },
         act('Cut', 'cut', 'Ctrl+X'),
         act('Copy', 'copy', 'Ctrl+C'),
+        act('Copy as Text', 'copyAsText', 'Ctrl+Shift+C'),
         act('Paste', 'paste', 'Ctrl+V'),
+        act('Paste Special...', 'pasteSpecial', 'Ctrl+Shift+V'),
         act('Delete', 'delete', 'Delete'),
         {
           label: 'Duplicate',
@@ -1750,6 +1789,14 @@ export function SchematicEditor({
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
         e.preventDefault();
         duplicateSelection();
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'c') {
+        // ACTIONS::copyAsText (Ctrl+Shift+C).
+        e.preventDefault();
+        onTopAction('copyAsText');
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'v') {
+        // ACTIONS::pasteSpecial (Ctrl+Shift+V).
+        e.preventDefault();
+        setPasteSpecialOpen(true);
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
         // SCH_ACTIONS::placeGlobalLabel default hotkey (Ctrl+L).
         e.preventDefault();
@@ -2151,9 +2198,11 @@ export function SchematicEditor({
             pastePending={pastePending}
             onPasteDone={onPasteDone}
             ercMarkers={ercResult?.filter((v) =>
-              v.severity === 'error'
-                ? es.appearance.show_erc_errors
-                : es.appearance.show_erc_warnings,
+              setup.ercExclusions.includes(ercExclusionKey(v))
+                ? es.appearance.show_erc_exclusions
+                : v.severity === 'error'
+                  ? es.appearance.show_erc_errors
+                  : es.appearance.show_erc_warnings,
             )}
             onCommand={runCommand}
             onCursorMove={setCursor}
@@ -2193,6 +2242,19 @@ export function SchematicEditor({
               onLocate={locateViolation}
               onDelete={(i) => setErcResult((r) => (r ? r.filter((_, idx) => idx !== i) : r))}
               onDeleteAll={() => setErcResult([])}
+              excluded={new Set(setup.ercExclusions)}
+              onToggleExclude={(v) => {
+                const key = ercExclusionKey(v);
+                setSetup((cur) => {
+                  const has = cur.ercExclusions.includes(key);
+                  return {
+                    ...cur,
+                    ercExclusions: has
+                      ? cur.ercExclusions.filter((k) => k !== key)
+                      : [...cur.ercExclusions, key],
+                  };
+                });
+              }}
               onEditSeverities={() => setSetupOpen(true)}
               onClose={() => setErcResult(null)}
             />
@@ -2230,6 +2292,7 @@ export function SchematicEditor({
           {printOpen && (
             <DialogPrint
               onPrint={doPrint}
+              themeId={es.appearance.color_theme}
               onPageSetup={() => {
                 setPrintOpen(false);
                 setPageSettingsOpen(true);
@@ -2237,9 +2300,27 @@ export function SchematicEditor({
               onClose={() => setPrintOpen(false)}
             />
           )}
+          {pasteSpecialOpen && (
+            <DialogPasteSpecial
+              onOk={(mode: PasteMode) => {
+                setPasteSpecialOpen(false);
+                void navigator.clipboard?.readText().then((text) => {
+                  setDoc((d) => {
+                    const payload = d ? parsePastedText(text, d, mode) : null;
+                    if (payload) {
+                      setActiveTool('select');
+                      setPastePending(payload);
+                    }
+                    return d;
+                  });
+                });
+              }}
+              onCancel={() => setPasteSpecialOpen(false)}
+            />
+          )}
           {plotOpen && (
             <DialogPlot
-              themeName={es.appearance.color_theme}
+              themeId={es.appearance.color_theme}
               onPlot={doPlot}
               onClose={() => setPlotOpen(false)}
             />
@@ -2384,16 +2465,18 @@ export function SchematicEditor({
           kind="wire"
           widthIU={lineEdit.widthIU}
           style={lineEdit.style}
+          color={lineEdit.color}
           onOk={commitLineEdit}
           onCancel={() => setLineEdit(null)}
         />
       )}
 
-      {/* Junction diameter (DIALOG_JUNCTION_PROPS, E on a junction). */}
+      {/* Junction diameter/colour (DIALOG_JUNCTION_PROPS, E on a junction). */}
       {junctionEdit && (
         <DialogLineProperties
           kind="junction"
           diameterIU={junctionEdit.diameterIU}
+          color={junctionEdit.color}
           onOk={commitJunctionEdit}
           onCancel={() => setJunctionEdit(null)}
         />

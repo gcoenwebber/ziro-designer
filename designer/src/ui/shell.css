@@ -1328,6 +1328,28 @@ body {
   background: var(--accent, #2f65c0);
   color: #fff;
 }
+.ze-erc-row.excluded .msg {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+.ze-erc-row .ze-erc-exclude {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border: 1px solid var(--chrome-border);
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+}
+.ze-erc-row:hover .ze-erc-exclude {
+  opacity: 0.8;
+}
+.ze-erc-row .ze-erc-exclude:hover {
+  opacity: 1;
+  background: var(--chrome-hover);
+}
 .ze-erc-row .pos {
   margin-left: 8px;
   color: #9a9ca0;

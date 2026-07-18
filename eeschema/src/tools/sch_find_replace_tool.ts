@@ -16,7 +16,7 @@ import type { LibSymbol, SchField, Schematic } from '../types.js';
 import type { EditCommand } from './command.js';
 import { refId } from './hittest.js';
 
-export type MatchMode = 'plain' | 'wholeword' | 'wildcard';
+export type MatchMode = 'plain' | 'wholeword' | 'wildcard' | 'regex';
 
 /** EDA_SEARCH_DATA + the SCH_SEARCH_DATA extras. */
 export interface SchSearchData {
@@ -63,6 +63,14 @@ export function matchesText(text: string, d: SchSearchData): boolean {
       const re = escapeRe(s).replace(/\\\*/g, '.*').replace(/\\\?/g, '.');
       return new RegExp(`^${re}$`).test(t);
     }
+    case 'regex':
+      // EDA_SEARCH_DATA searchAndReplace regex mode (wxRegEx): an invalid
+      // pattern simply matches nothing, like upstream's failed Compile().
+      try {
+        return new RegExp(d.findString, d.matchCase ? '' : 'i').test(text);
+      } catch {
+        return false;
+      }
     default:
       return t.includes(s);
   }
@@ -159,6 +167,16 @@ const isWordChar = (c: string): boolean => /\w/.test(c);
  */
 export function replaceText(text: string, d: SchSearchData): string | null {
   if (!d.findString) return null;
+  // Regex mode replaces every pattern match (wxRegEx::ReplaceAll).
+  if (d.matchMode === 'regex') {
+    try {
+      const re = new RegExp(d.findString, d.matchCase ? 'g' : 'gi');
+      const result = text.replace(re, d.replaceString);
+      return result !== text ? result : null;
+    } catch {
+      return null;
+    }
+  }
   const folded = d.matchCase ? text : text.toUpperCase();
   const search = d.matchCase ? d.findString : d.findString.toUpperCase();
   let result = '';

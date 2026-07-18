@@ -204,6 +204,8 @@ export interface SchJunction {
   readonly at: Vec2;
   /** Diameter in IU; 0 means "default". */
   readonly diameter: number;
+  /** Optional explicit colour [r,g,b,a]; unset = the junction layer colour. */
+  readonly color?: readonly [number, number, number, number];
   readonly uuid?: string;
   readonly source: SList;
 }

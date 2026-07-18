@@ -39,6 +39,27 @@ describe('matchesText (EDA_ITEM::Matches)', () => {
     expect(matchesText('CR15', data({ findString: 'R*', matchMode: 'wildcard' }))).toBe(false);
   });
 
+  it('regex mode matches a wxRegEx pattern (invalid pattern matches nothing)', () => {
+    expect(matchesText('R15', data({ findString: '^R\\d+$', matchMode: 'regex' }))).toBe(true);
+    expect(matchesText('CR15', data({ findString: '^R\\d+$', matchMode: 'regex' }))).toBe(false);
+    // Case sensitivity follows Match case, off by default.
+    expect(matchesText('vcc', data({ findString: 'VCC', matchMode: 'regex' }))).toBe(true);
+    expect(
+      matchesText('vcc', data({ findString: 'VCC', matchMode: 'regex', matchCase: true })),
+    ).toBe(false);
+    // An invalid pattern never throws and never matches.
+    expect(matchesText('anything', data({ findString: '(', matchMode: 'regex' }))).toBe(false);
+  });
+
+  it('regex replace substitutes every match', () => {
+    expect(
+      replaceText(
+        'R1 R2 R3',
+        data({ findString: 'R(\\d)', replaceString: 'C$1', matchMode: 'regex' }),
+      ),
+    ).toBe('C1 C2 C3');
+  });
+
   it('an empty search string never matches', () => {
     expect(matchesText('anything', data({ findString: '' }))).toBe(false);
   });

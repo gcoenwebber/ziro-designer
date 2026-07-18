@@ -9,18 +9,26 @@
 
 import { useState, type JSX } from 'react';
 import type { PlotOpts } from '../render/plot.js';
+import { BUILTIN_THEMES } from '../theme.js';
 
 interface Props {
-  onPrint: (opts: PlotOpts) => void;
+  onPrint: (opts: PlotOpts, themeId?: string) => void;
+  /** The editor's active theme id (used when a different print theme is off). */
+  themeId?: string;
   /** Page Setup... button (upstream m_buttonPageSetup opens the page dialog). */
   onPageSetup?: () => void;
   onClose: () => void;
 }
 
-export function DialogPrint({ onPrint, onPageSetup, onClose }: Props): JSX.Element {
+export function DialogPrint({ onPrint, themeId, onPageSetup, onClose }: Props): JSX.Element {
   const [color, setColor] = useState(true);
   const [drawingSheet, setDrawingSheet] = useState(true);
   const [background, setBackground] = useState(false);
+  // "Use a different color theme for printing" (m_checkUseColorTheme + choice).
+  const [useTheme, setUseTheme] = useState(false);
+  const [themeSel, setThemeSel] = useState(
+    themeId && BUILTIN_THEMES[themeId] ? themeId : '_builtin_default',
+  );
 
   return (
     <div className="ze-modal-backdrop" onMouseDown={onClose}>
@@ -68,12 +76,30 @@ export function DialogPrint({ onPrint, onPageSetup, onClose }: Props): JSX.Eleme
             />{' '}
             Print background color
           </label>
-          <label
-            style={{ display: 'block', margin: '4px 0', opacity: 0.45 }}
-            title="Not supported yet — printing uses the editor theme"
-          >
-            <input type="checkbox" disabled /> Use a different color theme for printing:
-          </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0' }}>
+            <label style={{ fontSize: 12.5 }}>
+              <input
+                type="checkbox"
+                checked={useTheme}
+                disabled={!color}
+                onChange={(e) => setUseTheme(e.target.checked)}
+              />{' '}
+              Use a different color theme for printing:
+            </label>
+            <select
+              className="ze-select"
+              style={{ flex: 1 }}
+              value={themeSel}
+              disabled={!useTheme || !color}
+              onChange={(e) => setThemeSel(e.target.value)}
+            >
+              {Object.entries(BUILTIN_THEMES).map(([id, t]) => (
+                <option key={id} value={id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
         <div className="ze-modal-footer">
           {onPageSetup && (
@@ -87,7 +113,9 @@ export function DialogPrint({ onPrint, onPageSetup, onClose }: Props): JSX.Eleme
           </button>
           <button
             className="ze-btn primary"
-            onClick={() => onPrint({ color, drawingSheet, background })}
+            onClick={() =>
+              onPrint({ color, drawingSheet, background }, useTheme ? themeSel : undefined)
+            }
           >
             Print
           </button>

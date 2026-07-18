@@ -364,8 +364,15 @@ function writeSymbol(sym: SchSymbol): SList {
   return { kind: 'list', items };
 }
 
-/** Patch (or append) a `(stroke (width ..) (type ..))` node to match `stroke`,
- *  changing only width/type and leaving any other tokens (e.g. color) in place. */
+/** `(color r g b a)` from a typed colour; KiCad writes (0 0 0 0) for "unset". */
+function colorNode(color: readonly [number, number, number, number] | undefined): SList {
+  const [r, g, b, a] = color ?? [0, 0, 0, 0];
+  return list(atom('color'), atom(String(r)), atom(String(g)), atom(String(b)), atom(String(a)));
+}
+
+/** Patch (or append) a `(stroke (width ..) (type ..) [(color ..)])` node to
+ *  match `stroke`, leaving any other tokens in place. A set colour is written;
+ *  clearing one rewrites an existing color child to KiCad's (0 0 0 0). */
 function patchStroke(node: SList, stroke: Stroke | undefined): SList {
   if (!stroke) return node;
   if (childNamed(node, 'stroke')) {
@@ -375,20 +382,18 @@ function patchStroke(node: SList, stroke: Stroke | undefined): SList {
         out = mapChild(out, 'width', () => list(atom('width'), atom(mm(stroke.width))));
       if (childNamed(out, 'type'))
         out = mapChild(out, 'type', () => list(atom('type'), atom(stroke.type)));
+      if (childNamed(out, 'color')) out = mapChild(out, 'color', () => colorNode(stroke.color));
+      else if (stroke.color) out = { kind: 'list', items: [...out.items, colorNode(stroke.color)] };
       return out;
     });
   }
-  return {
-    kind: 'list',
-    items: [
-      ...node.items,
-      list(
-        atom('stroke'),
-        list(atom('width'), atom(mm(stroke.width))),
-        list(atom('type'), atom(stroke.type)),
-      ),
-    ],
-  };
+  const strokeItems = [
+    atom('stroke'),
+    list(atom('width'), atom(mm(stroke.width))),
+    list(atom('type'), atom(stroke.type)),
+    ...(stroke.color ? [colorNode(stroke.color)] : []),
+  ];
+  return { kind: 'list', items: [...node.items, list(...strokeItems)] };
 }
 
 function writeLine(l: SchLine): SList {
@@ -410,11 +415,19 @@ function writeLine(l: SchLine): SList {
   return patchStroke(node, l.stroke);
 }
 
-/** Patch a junction: position and `(diameter ..)`. */
+/** Patch a junction: position, `(diameter ..)` and `(color ..)`. */
 function writeJunction(j: SchJunction): SList {
   let node = patchAt(j.source, j.at);
   if (childNamed(node, 'diameter'))
     node = mapChild(node, 'diameter', () => list(atom('diameter'), atom(mm(j.diameter))));
+  if (childNamed(node, 'color')) node = mapChild(node, 'color', () => colorNode(j.color));
+  else if (j.color) {
+    // Insert before (uuid ..) to keep KiCad's field order (at diameter color uuid).
+    const items = [...node.items];
+    const uuidIdx = items.findIndex((it) => isList(it) && head(it) === 'uuid');
+    items.splice(uuidIdx === -1 ? items.length : uuidIdx, 0, colorNode(j.color));
+    node = { kind: 'list', items };
+  }
   return node;
 }
 

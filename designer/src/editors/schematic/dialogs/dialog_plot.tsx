@@ -9,14 +9,16 @@
  */
 
 import { useState, type JSX } from 'react';
+import { mmToIU } from '@ziroeda/common';
 import type { PlotOpts } from '../render/plot.js';
+import { BUILTIN_THEMES } from '../theme.js';
 
 export type PlotFormat = 'svg' | 'pdf' | 'png';
 
 interface Props {
-  /** Active colour theme name (the Color theme: choice, fixed for now). */
-  themeName?: string;
-  onPlot: (format: PlotFormat, opts: PlotOpts, allPages: boolean) => void;
+  /** The editor's active theme id (the "Color theme:" default selection). */
+  themeId?: string;
+  onPlot: (format: PlotFormat, opts: PlotOpts, allPages: boolean, themeId: string) => void;
   onClose: () => void;
 }
 
@@ -28,11 +30,24 @@ const FORMATS: { id: string; label: string; disabled?: boolean }[] = [
   { id: 'png', label: 'PNG' },
 ];
 
-export function DialogPlot({ themeName, onPlot, onClose }: Props): JSX.Element {
+export function DialogPlot({ themeId, onPlot, onClose }: Props): JSX.Element {
   const [format, setFormat] = useState<PlotFormat>('pdf');
   const [color, setColor] = useState(true);
   const [drawingSheet, setDrawingSheet] = useState(true);
   const [background, setBackground] = useState(true);
+  const [themeSel, setThemeSel] = useState(
+    themeId && BUILTIN_THEMES[themeId] ? themeId : '_builtin_default',
+  );
+  const [dpi, setDpi] = useState(300);
+  const [minWidthMm, setMinWidthMm] = useState('0.1524');
+
+  const opts = (): PlotOpts => ({
+    color,
+    drawingSheet,
+    background,
+    dpi,
+    defaultPenIU: mmToIU(Number(minWidthMm) || 0),
+  });
 
   const group: React.CSSProperties = {
     border: '1px solid var(--chrome-border)',
@@ -134,8 +149,18 @@ export function DialogPlot({ themeName, onPlot, onClose }: Props): JSX.Element {
               </div>
               <div style={row}>
                 <span style={lab}>Color theme:</span>
-                <select className="ze-select" style={{ flex: 1 }} disabled value="cur">
-                  <option value="cur">{themeName ?? 'KiCad Default'}</option>
+                <select
+                  className="ze-select"
+                  style={{ flex: 1 }}
+                  value={themeSel}
+                  disabled={!color}
+                  onChange={(e) => setThemeSel(e.target.value)}
+                >
+                  {Object.entries(BUILTIN_THEMES).map(([id, t]) => (
+                    <option key={id} value={id}>
+                      {t.name}
+                    </option>
+                  ))}
                 </select>
               </div>
               <label style={{ display: 'block', margin: '5px 0', fontSize: 12.5 }}>
@@ -150,7 +175,13 @@ export function DialogPlot({ themeName, onPlot, onClose }: Props): JSX.Element {
               </label>
               <div style={row}>
                 <span style={lab}>Minimum line width:</span>
-                <input className="ze-search" style={{ width: 70 }} disabled value="0.1524" />
+                <input
+                  className="ze-search"
+                  style={{ width: 70 }}
+                  value={minWidthMm}
+                  title="Selection of the default pen thickness used to draw items, when their thickness is set to 0."
+                  onChange={(e) => setMinWidthMm(e.target.value)}
+                />
                 <span className="ze-muted" style={{ fontSize: 11 }}>
                   mm
                 </span>
@@ -179,10 +210,20 @@ export function DialogPlot({ themeName, onPlot, onClose }: Props): JSX.Element {
           {format === 'png' && (
             <fieldset style={group}>
               <legend style={legend}>PNG Options</legend>
-              <div style={{ ...row, opacity: 0.45 }} title="Fixed raster resolution for now">
+              <div style={row}>
                 <span style={{ fontSize: 12 }}>DPI:</span>
-                <input className="ze-search" style={{ width: 70 }} disabled value="600" />
-                <label style={{ fontSize: 12.5 }}>
+                <input
+                  className="ze-search"
+                  type="number"
+                  style={{ width: 80 }}
+                  value={dpi}
+                  min={50}
+                  max={2400}
+                  onChange={(e) =>
+                    setDpi(Math.max(50, Math.min(2400, Number(e.target.value) || 300)))
+                  }
+                />
+                <label style={{ fontSize: 12.5, opacity: 0.45 }} title="Always on in the browser">
                   <input type="checkbox" disabled checked readOnly /> Anti-alias
                 </label>
               </div>
@@ -204,16 +245,10 @@ export function DialogPlot({ themeName, onPlot, onClose }: Props): JSX.Element {
             Cancel
           </button>
           <span style={{ flex: 1 }} />
-          <button
-            className="ze-btn"
-            onClick={() => onPlot(format, { color, drawingSheet, background }, false)}
-          >
+          <button className="ze-btn" onClick={() => onPlot(format, opts(), false, themeSel)}>
             Plot Current Page
           </button>
-          <button
-            className="ze-btn primary"
-            onClick={() => onPlot(format, { color, drawingSheet, background }, true)}
-          >
+          <button className="ze-btn primary" onClick={() => onPlot(format, opts(), true, themeSel)}>
             Plot All Pages
           </button>
         </div>

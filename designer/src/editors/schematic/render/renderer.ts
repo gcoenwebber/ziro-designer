@@ -147,6 +147,9 @@ export interface RenderOpts {
   /** Draw the page border + title block (LAYER_DRAWINGSHEET). Defaults to true;
    *  Print/Plot's "drawing sheet" option turns it off. */
   showDrawingSheet?: boolean;
+  /** Pen width (IU) for zero-width strokes — the plot dialog's "Minimum line
+   *  width" (default pen thickness). Unset = KiCad's 6-mil default. */
+  defaultPenIU?: number;
   /** selection.thickness (mils). */
   selectionThicknessMils: number;
   /** selection.highlight_thickness (mils). */
@@ -180,6 +183,9 @@ export const DEFAULT_RENDER_OPTS: RenderOpts = {
 
 const MM = 10000; // IU per mm
 const DEFAULT_LINE_WIDTH = 0.1524 * MM; // ~6 mil, KiCad default
+// The pen for zero-width strokes; plot/print override it per render via
+// RenderOpts.defaultPenIU (KiCad's plot "minimum line width" setting).
+let g_defaultPen = DEFAULT_LINE_WIDTH;
 const _GRID = 1.27 * MM; // 50 mil
 
 function libUnitMatches(u: LibSymbolUnit, unit: number, bodyStyle: number): boolean {
@@ -196,7 +202,7 @@ function cssColor(c: readonly [number, number, number, number]): string {
  * gap = 3×width, dot ≈ 1×width (ISO 128-2 ratios). Resets to solid otherwise.
  */
 function setDash(ctx: CanvasRenderingContext2D, type: string | undefined, width: number): void {
-  const w = width > 0 ? width : DEFAULT_LINE_WIDTH;
+  const w = width > 0 ? width : g_defaultPen;
   switch (type) {
     case 'dash':
       ctx.setLineDash([12 * w, 3 * w]);
@@ -243,6 +249,8 @@ export function renderSchematic(
   highlight?: ReadonlySet<string>,
   opts: RenderOpts = DEFAULT_RENDER_OPTS,
 ): void {
+  g_defaultPen =
+    opts.defaultPenIU && opts.defaultPenIU > 0 ? opts.defaultPenIU : DEFAULT_LINE_WIDTH;
   const libById = new Map<string, LibSymbol>();
   for (const lib of sch.libSymbols) libById.set(lib.libId, lib);
 
@@ -317,7 +325,7 @@ export function renderSchematic(
     ctx.strokeStyle = HALO_COLOR;
     sch.lines.forEach((line, i) => {
       if (!hl(refId('line', line.uuid, i))) return;
-      const base = line.stroke && line.stroke.width > 0 ? line.stroke.width : DEFAULT_LINE_WIDTH;
+      const base = line.stroke && line.stroke.width > 0 ? line.stroke.width : g_defaultPen;
       ctx.lineWidth = base + shadowWidth;
       strokeLine(ctx, line.start, line.end);
     });
@@ -353,15 +361,17 @@ export function renderSchematic(
     if (!inView(minX, minY, maxX, maxY)) return;
 
     const on = hl(refId('line', line.uuid, i));
-    const width = line.stroke && line.stroke.width > 0 ? line.stroke.width : DEFAULT_LINE_WIDTH;
+    const width = line.stroke && line.stroke.width > 0 ? line.stroke.width : g_defaultPen;
+    // An explicit stroke colour overrides the layer colour for wires and buses
+    // too (SCH_PAINTER::getRenderColor honours SCH_LINE::GetLineColor()).
     ctx.strokeStyle = on
       ? theme.netHighlight
-      : line.kind === 'bus'
-        ? theme.bus
-        : line.kind === 'wire'
-          ? theme.wire
-          : line.stroke?.color
-            ? cssColor(line.stroke.color) // graphic polyline: its own colour
+      : line.stroke?.color
+        ? cssColor(line.stroke.color)
+        : line.kind === 'bus'
+          ? theme.bus
+          : line.kind === 'wire'
+            ? theme.wire
             : theme.noteLine;
     ctx.lineWidth = width;
     setDash(ctx, line.stroke?.type, width);
@@ -388,7 +398,7 @@ export function renderSchematic(
     )
       continue;
     ctx.strokeStyle = theme.wire;
-    ctx.lineWidth = be.stroke && be.stroke.width > 0 ? be.stroke.width : DEFAULT_LINE_WIDTH;
+    ctx.lineWidth = be.stroke && be.stroke.width > 0 ? be.stroke.width : g_defaultPen;
     ctx.beginPath();
     ctx.moveTo(be.at.x, be.at.y);
     ctx.lineTo(ex, ey);
@@ -416,10 +426,15 @@ export function renderSchematic(
     ctx.drawImage(entry.img, im.at.x - w / 2, im.at.y - h / 2, w, h);
   }
 
-  // Junctions (recoloured when on the highlighted net).
+  // Junctions (recoloured when on the highlighted net); an explicit colour
+  // overrides the layer colour (SCH_JUNCTION::GetJunctionColor).
   sch.junctions.forEach((j, i) => {
     if (!inView(j.at.x, j.at.y, j.at.x, j.at.y)) return;
-    ctx.fillStyle = hl(refId('junction', j.uuid, i)) ? theme.netHighlight : theme.junction;
+    ctx.fillStyle = hl(refId('junction', j.uuid, i))
+      ? theme.netHighlight
+      : j.color
+        ? cssColor(j.color)
+        : theme.junction;
     const d = j.diameter > 0 ? j.diameter : 0.9 * MM;
     ctx.beginPath();
     ctx.arc(j.at.x, j.at.y, d / 2, 0, Math.PI * 2);
@@ -430,8 +445,8 @@ export function renderSchematic(
   // the point, in the LAYER_NOCONNECT colour (SCH_PAINTER::draw(SCH_NO_CONNECT)).
   if (sch.noConnects.length > 0) {
     ctx.strokeStyle = theme.noConnect;
-    ctx.lineWidth = DEFAULT_LINE_WIDTH;
-    const delta = Math.max(NOCONNECT_SIZE, DEFAULT_LINE_WIDTH * 3) / 2;
+    ctx.lineWidth = g_defaultPen;
+    const delta = Math.max(NOCONNECT_SIZE, g_defaultPen * 3) / 2;
     for (const nc of sch.noConnects) {
       if (!inView(nc.at.x - delta, nc.at.y - delta, nc.at.x + delta, nc.at.y + delta)) continue;
       ctx.beginPath();
@@ -513,7 +528,7 @@ export function renderSchematic(
     if (!inView(sh.at.x - pad, sh.at.y - pad, sh.at.x + sh.size.w + pad, sh.at.y + sh.size.h + pad))
       continue;
     const border = sh.stroke?.color ? cssColor(sh.stroke.color) : theme.sheetBorder;
-    const bw = sh.stroke && sh.stroke.width > 0 ? sh.stroke.width : DEFAULT_LINE_WIDTH;
+    const bw = sh.stroke && sh.stroke.width > 0 ? sh.stroke.width : g_defaultPen;
     if (sh.fillColor) {
       ctx.fillStyle = cssColor(sh.fillColor);
       ctx.fillRect(sh.at.x, sh.at.y, sh.size.w, sh.size.h);
@@ -570,7 +585,7 @@ export function renderSchematic(
   const dangling = danglingFor(sch, libById);
   if (dangling.length > 0) {
     ctx.strokeStyle = brighten(theme.pin, 0.3);
-    ctx.lineWidth = DEFAULT_LINE_WIDTH / 3;
+    ctx.lineWidth = g_defaultPen / 3;
     for (const p of dangling) {
       if (!inView(p.x, p.y, p.x, p.y)) continue;
       ctx.beginPath();
@@ -584,7 +599,7 @@ export function renderSchematic(
 function drawSheetGraphic(ctx: CanvasRenderingContext2D, g: LibGraphic, theme: Theme): void {
   if (g.kind === 'text') return; // free text arrives via labels, not graphics
   const stroke = g.stroke;
-  const width = stroke && stroke.width > 0 ? stroke.width : DEFAULT_LINE_WIDTH;
+  const width = stroke && stroke.width > 0 ? stroke.width : g_defaultPen;
   const color = stroke?.color ? cssColor(stroke.color) : theme.noteLine;
   const fill = g.fill?.type === 'color' && g.fill.color ? cssColor(g.fill.color) : null;
 
@@ -687,7 +702,7 @@ function drawTextBox(
   if (!inView(x0, y0, x1, y1)) return;
 
   const stroke = tb.stroke;
-  const width = stroke && stroke.width > 0 ? stroke.width : DEFAULT_LINE_WIDTH;
+  const width = stroke && stroke.width > 0 ? stroke.width : g_defaultPen;
   const borderColor = stroke?.color ? cssColor(stroke.color) : theme.noteLine;
   const textColor = tb.effects?.color ? cssColor(tb.effects.color) : theme.noteLine;
   const fill =
@@ -818,12 +833,9 @@ function drawTable(
   if (!inView(x0, y0, x1, y1)) return;
 
   const color = theme.noteLine;
-  const border =
-    t.borderStroke && t.borderStroke.width > 0 ? t.borderStroke.width : DEFAULT_LINE_WIDTH;
+  const border = t.borderStroke && t.borderStroke.width > 0 ? t.borderStroke.width : g_defaultPen;
   const sep =
-    t.separatorsStroke && t.separatorsStroke.width > 0
-      ? t.separatorsStroke.width
-      : DEFAULT_LINE_WIDTH;
+    t.separatorsStroke && t.separatorsStroke.width > 0 ? t.separatorsStroke.width : g_defaultPen;
 
   // Cell text.
   const m = { left: 0, top: 0, right: 0, bottom: 0 };
@@ -1075,7 +1087,7 @@ function drawLabel(
           : theme.label;
   // SCH_LABEL_BASE::GetSchematicTextOffset: lift the text clear of the wire by
   // m_TextOffsetRatio (0.15) x text size plus the pen width (sch_label.cpp).
-  const dist = Math.round(0.15 * h) + DEFAULT_LINE_WIDTH;
+  const dist = Math.round(0.15 * h) + g_defaultPen;
   // Reading direction unit vector for the spin style (where the text flows).
   const flow =
     spin === SPIN.LEFT
@@ -1086,7 +1098,7 @@ function drawLabel(
           ? { x: 0, y: -1 }
           : { x: 0, y: 1 };
 
-  ctx.lineWidth = shadow ? DEFAULT_LINE_WIDTH + shadow.width : DEFAULT_LINE_WIDTH;
+  ctx.lineWidth = shadow ? g_defaultPen + shadow.width : g_defaultPen;
   ctx.strokeStyle = color;
 
   if (l.kind === 'hierarchical_label' || l.kind === 'global_label') {
@@ -1236,7 +1248,7 @@ function drawSelectionShadows(
   // Wires / buses: wider stroke of the segment.
   sch.lines.forEach((l, i) => {
     if (!selection.has(refId('line', l.uuid, i))) return;
-    const base = l.stroke && l.stroke.width > 0 ? l.stroke.width : DEFAULT_LINE_WIDTH;
+    const base = l.stroke && l.stroke.width > 0 ? l.stroke.width : g_defaultPen;
     ctx.lineWidth = base + width;
     strokeLine(ctx, l.start, l.end);
   });
@@ -1253,8 +1265,8 @@ function drawSelectionShadows(
   // No-connect flags: a wider X under the mark.
   sch.noConnects.forEach((nc, i) => {
     if (!selection.has(refId('noconnect', nc.uuid, i))) return;
-    ctx.lineWidth = DEFAULT_LINE_WIDTH + width;
-    const delta = Math.max(NOCONNECT_SIZE, DEFAULT_LINE_WIDTH * 3) / 2;
+    ctx.lineWidth = g_defaultPen + width;
+    const delta = Math.max(NOCONNECT_SIZE, g_defaultPen * 3) / 2;
     ctx.beginPath();
     ctx.moveTo(nc.at.x - delta, nc.at.y - delta);
     ctx.lineTo(nc.at.x + delta, nc.at.y + delta);
@@ -1283,7 +1295,7 @@ function drawSelectionShadows(
   // Sheets: re-stroke the rectangle wider.
   sch.sheets.forEach((sh, i) => {
     if (!selection.has(refId('sheet', sh.uuid, i))) return;
-    const bw = sh.stroke && sh.stroke.width > 0 ? sh.stroke.width : DEFAULT_LINE_WIDTH;
+    const bw = sh.stroke && sh.stroke.width > 0 ? sh.stroke.width : g_defaultPen;
     ctx.lineWidth = bw + width;
     ctx.strokeRect(sh.at.x, sh.at.y, sh.size.w, sh.size.h);
   });
@@ -1321,7 +1333,7 @@ function drawLibUnitShadow(
   ctx.strokeStyle = color;
   for (const g of unit.graphics) {
     const base =
-      g.kind !== 'text' && g.stroke && g.stroke.width > 0 ? g.stroke.width : DEFAULT_LINE_WIDTH;
+      g.kind !== 'text' && g.stroke && g.stroke.width > 0 ? g.stroke.width : g_defaultPen;
     ctx.lineWidth = base + width;
     switch (g.kind) {
       case 'rectangle': {
@@ -1362,7 +1374,7 @@ function drawLibUnitShadow(
         break; // text has no stroke halo
     }
   }
-  ctx.lineWidth = DEFAULT_LINE_WIDTH + width;
+  ctx.lineWidth = g_defaultPen + width;
   for (const pin of unit.pins) {
     if (pin.hidden) continue;
     const a = localToWorld(origin, t, pin.at);
@@ -1385,8 +1397,7 @@ function drawLibUnit(
   showHiddenPins = false,
 ): number {
   for (const g of unit.graphics) {
-    const lw =
-      g.kind !== 'text' && g.stroke && g.stroke.width > 0 ? g.stroke.width : DEFAULT_LINE_WIDTH;
+    const lw = g.kind !== 'text' && g.stroke && g.stroke.width > 0 ? g.stroke.width : g_defaultPen;
     const filled = g.kind !== 'text' && g.fill && g.fill.type !== 'none';
     ctx.lineWidth = lw;
     ctx.strokeStyle = theme.symbolOutline;
@@ -1484,11 +1495,11 @@ function drawLibUnit(
     const brightened = symId !== undefined && (highlight?.has(`${symId}:pin${idx}`) ?? false);
     if (brightened) {
       ctx.strokeStyle = 'rgba(255, 0, 255, 0.15)';
-      ctx.lineWidth = DEFAULT_LINE_WIDTH + shadowWidth;
+      ctx.lineWidth = g_defaultPen + shadowWidth;
       strokePinBody();
     }
     ctx.strokeStyle = brightened ? '#ff00ff' : hiddenGhost ? theme.hidden : theme.pin;
-    ctx.lineWidth = DEFAULT_LINE_WIDTH;
+    ctx.lineWidth = g_defaultPen;
     strokePinBody();
 
     const dir = pinDir(pin.angle);
@@ -1656,7 +1667,7 @@ function drawText(
   ctx.translate(offX, offY);
   ctx.strokeStyle = color;
   // KiCad text pen: default ~size/8 clamped; bold = size/5 (GetPenSizeForBold).
-  ctx.lineWidth = bold ? heightIU / 5 : Math.max(heightIU * 0.11, DEFAULT_LINE_WIDTH * 0.6);
+  ctx.lineWidth = bold ? heightIU / 5 : Math.max(heightIU * 0.11, g_defaultPen * 0.6);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   // Vector-text mode strokes segments directly (capturable by the SVG adapter);

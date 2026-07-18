@@ -85,7 +85,7 @@ function readStroke(node: SList): Stroke | undefined {
       g = numArg(col, 1) ?? 0,
       b = numArg(col, 2) ?? 0,
       a = numArg(col, 3) ?? 1;
-    if (r || g || b || a < 1) stroke.color = [r, g, b, a]; // ignore KiCad's (0 0 0 0) "unspecified"
+    if (r || g || b || a) stroke.color = [r, g, b, a]; // KiCad's (0 0 0 0) = "unspecified"
   }
   return stroke;
 }
@@ -100,7 +100,7 @@ function readFill(node: SList): Fill | undefined {
       g = numArg(col, 1) ?? 0,
       b = numArg(col, 2) ?? 0,
       a = numArg(col, 3) ?? 1;
-    if (r || g || b || a < 1) fill.color = [r, g, b, a];
+    if (r || g || b || a) fill.color = [r, g, b, a]; // (0 0 0 0) = "unspecified"
   }
   return fill;
 }
@@ -130,7 +130,7 @@ function readEffects(node: SList): TextEffects | undefined {
         g = numArg(col, 1) ?? 0,
         b = numArg(col, 2) ?? 0,
         a = numArg(col, 3) ?? 1;
-      if (r || g || b || a < 1) effects.color = [r, g, b, a];
+      if (r || g || b || a) effects.color = [r, g, b, a]; // (0 0 0 0) = "unspecified"
     }
   }
   return effects;
@@ -411,6 +411,14 @@ function readJunction(node: SList): SchJunction {
     diameter: mmToIU(numArg(childNamed(node, 'diameter') ?? node, 0) ?? 0),
     source: node,
   };
+  const col = childNamed(node, 'color');
+  if (col) {
+    const r = numArg(col, 0) ?? 0,
+      g = numArg(col, 1) ?? 0,
+      b = numArg(col, 2) ?? 0,
+      a = numArg(col, 3) ?? 1;
+    if (r || g || b || a) j.color = [r, g, b, a]; // (0 0 0 0) = "unspecified"
+  }
   const uuid = stringField(node, 'uuid');
   if (uuid) j.uuid = uuid;
   return j;

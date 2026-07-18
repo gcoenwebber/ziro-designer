@@ -15,16 +15,32 @@ import { PanelSetupSeverities } from './panels/panel_setup_severities.js';
 import { PanelSetupPinmap } from './panels/panel_setup_pinmap.js';
 import { PanelTextVariables, type TextVar } from './panels/panel_text_variables.js';
 import { PanelTemplateFieldnames, type FieldTemplate } from './panels/panel_template_fieldnames.js';
+import {
+  PanelSetupFormatting,
+  defaultFormatting,
+  type FormattingSettings,
+} from './panels/panel_setup_formatting.js';
 
 /** Project-scoped schematic settings edited by the dialog (SCHEMATIC_SETTINGS subset). */
 export interface SchematicSetup {
   erc: ErcSettings;
   textVars: TextVar[];
   fieldTemplates: FieldTemplate[];
+  /** Formatting defaults (PANEL_SETUP_FORMATTING). */
+  formatting: FormattingSettings;
+  /** ERC exclusion signatures (SCHEMATIC::m_ercExclusions), persisted like the
+   *  project file's stored exclusions so an excluded marker stays excluded. */
+  ercExclusions: string[];
 }
 
 export function defaultSchematicSetup(): SchematicSetup {
-  return { erc: defaultErcSettings(), textVars: [], fieldTemplates: [] };
+  return {
+    erc: defaultErcSettings(),
+    textVars: [],
+    fieldTemplates: [],
+    formatting: defaultFormatting(),
+    ercExclusions: [],
+  };
 }
 
 type PageId =
@@ -53,7 +69,7 @@ interface PageNode {
 // The upstream page tree (DIALOG_SCHEMATIC_SETUP::DIALOG_SCHEMATIC_SETUP).
 const PAGES: PageNode[] = [
   { label: 'General', section: true, depth: 0 },
-  { id: 'formatting', label: 'Formatting', disabled: true, depth: 1 },
+  { id: 'formatting', label: 'Formatting', depth: 1 },
   { id: 'annotation', label: 'Annotation', disabled: true, depth: 1 },
   { id: 'fieldTemplates', label: 'Field Name Templates', depth: 1 },
   { id: 'bomPresets', label: 'BOM Presets', disabled: true, depth: 1 },
@@ -83,6 +99,8 @@ export function DialogSchematicSetup({ value, initialPage, onOk, onCancel }: Pro
     erc: { severities: { ...value.erc.severities }, pinMap: value.erc.pinMap.map((r) => [...r]) },
     textVars: value.textVars.map((v) => ({ ...v })),
     fieldTemplates: value.fieldTemplates.map((t) => ({ ...t })),
+    formatting: { ...value.formatting },
+    ercExclusions: [...value.ercExclusions],
   }));
   const [page, setPage] = useState<PageId>(initialPage ?? 'severities');
 
@@ -90,6 +108,13 @@ export function DialogSchematicSetup({ value, initialPage, onOk, onCancel }: Pro
 
   const panel = ((): JSX.Element => {
     switch (page) {
+      case 'formatting':
+        return (
+          <PanelSetupFormatting
+            value={s.formatting}
+            onChange={(formatting) => setS((cur) => ({ ...cur, formatting }))}
+          />
+        );
       case 'severities':
         return <PanelSetupSeverities settings={s.erc} onChange={setErc} />;
       case 'pinmap':
