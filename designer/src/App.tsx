@@ -32,16 +32,12 @@ const projectNameOf = (files: PickedFile[]): string => {
 
 const pcbBasename = (p: string): string => p.split('/').pop()!.split('\\').pop()!;
 
-// The project's shared folder prefix (e.g. "proj/"), matching the home tree's
-// stripPrefix, or '' when the files sit at the root. New files added to the
-// project must carry this prefix so the tree keeps a single project folder.
+// The project's folder prefix (e.g. "proj/"), taken from the .kicad_pro's own
+// directory, or '' when it sits at the root. New files added to the project
+// carry this prefix so they land in the project folder like the other files.
 const projectDirPrefix = (files: PickedFile[]): string => {
-  const pro = files.find((f) => /\.kicad_pro$/i.test(f.name));
-  const anyPath = (pro?.name ?? files[0]?.name ?? '').replace(/\\/g, '/');
-  const firstSeg = anyPath.includes('/') ? `${anyPath.split('/')[0]}/` : '';
-  return firstSeg && files.every((f) => f.name.replace(/\\/g, '/').startsWith(firstSeg))
-    ? firstSeg
-    : '';
+  const pro = files.find((f) => /\.kicad_pro$/i.test(f.name))?.name.replace(/\\/g, '/');
+  return pro?.includes('/') ? pro.slice(0, pro.lastIndexOf('/') + 1) : '';
 };
 
 /**

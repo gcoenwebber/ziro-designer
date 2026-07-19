@@ -25,6 +25,14 @@ describe('project drawing-sheet reference', () => {
     ];
     expect(readSheetRef(files)).toBe('');
     expect(listProjectSheetFiles(files)).toEqual(['frame.kicad_wks']);
+    // A file present at two paths (a stray root copy + the project-folder copy)
+    // lists once by basename.
+    expect(
+      listProjectSheetFiles([
+        { name: 'frame.kicad_wks', text: WKS },
+        { name: 'proj/frame.kicad_wks', text: WKS },
+      ]),
+    ).toEqual(['frame.kicad_wks']);
 
     const updated = writeSheetRefText(PRO, 'frame.kicad_wks');
     expect(updated).not.toBeNull();

@@ -32,9 +32,12 @@ function findPro(files: readonly RawFile[]): RawFile | undefined {
   return files.find((f) => PRO_RE.test(f.name));
 }
 
-/** The `.kicad_wks` file basenames in the project (Page Settings choices). */
+/** The `.kicad_wks` file basenames in the project (Page Settings choices),
+ *  de-duplicated so a file present at two paths lists once. */
 export function listProjectSheetFiles(files: readonly RawFile[]): string[] {
-  return files.filter((f) => WKS_RE.test(f.name)).map((f) => sheetBasename(f.name));
+  const seen = new Set<string>();
+  for (const f of files) if (WKS_RE.test(f.name)) seen.add(sheetBasename(f.name));
+  return [...seen];
 }
 
 /** The referenced sheet file name (`schematic.page_layout_descr_file`), or ''. */

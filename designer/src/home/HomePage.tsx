@@ -589,7 +589,12 @@ export function HomePage({
   // libraries stay inside collapsible folders instead of flooding the list.
   const stripPrefix = useMemo<string>(() => {
     if (!picked) return '';
-    const anyPath = (proFile?.name ?? picked[0]?.name ?? '').replace(/\\/g, '/');
+    // The project folder is the .kicad_pro's own directory. Strip it so the
+    // tree is flat under the project — robustly, even if some file (e.g. a
+    // drawing sheet) doesn't share the prefix (it just shows at the root).
+    const pro = proFile?.name.replace(/\\/g, '/');
+    if (pro?.includes('/')) return pro.slice(0, pro.lastIndexOf('/') + 1);
+    const anyPath = (picked[0]?.name ?? '').replace(/\\/g, '/');
     const firstSeg = anyPath.includes('/') ? `${anyPath.split('/')[0]}/` : '';
     return firstSeg && picked.every((f) => f.name.replace(/\\/g, '/').startsWith(firstSeg))
       ? firstSeg
