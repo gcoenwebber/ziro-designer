@@ -52,6 +52,10 @@ export function App(): JSX.Element {
     | 'image'
   >('home');
   const [projectFiles, setProjectFiles] = useState<PickedFile[] | null>(null);
+  // `.kicad_wks` saved into the open project this session (Drawing Sheet Editor
+  // → Save to Project). Kept separate from projectFiles so adding one doesn't
+  // reload/reset the mounted editors; offered as schematic Page Settings choices.
+  const [sessionSheets, setSessionSheets] = useState<PickedFile[]>([]);
   const [startFile, setStartFile] = useState<string | null>(null);
   // A board opened directly (no schematic project around it).
   const [standalonePcb, setStandalonePcb] = useState<PickedFile | null>(null);
@@ -137,6 +141,26 @@ export function App(): JSX.Element {
     }, 1200);
   }, []);
 
+  // Drawing Sheet Editor → Save to Project: write the .kicad_wks into the open
+  // project (IndexedDB/cloud) and offer it as a schematic drawing-sheet choice.
+  const onSaveToProject = useCallback((fileName: string, text: string) => {
+    const cur = projectFilesRef.current;
+    if (!cur) return;
+    setSessionSheets((prev) => [
+      ...prev.filter((f) => f.name !== fileName),
+      { name: fileName, text },
+    ]);
+    if (!storageAvailable()) return;
+    void (async () => {
+      try {
+        const rec = (await listProjects()).find((p) => p.name === projectNameOf(cur));
+        if (rec) await updateProjectFiles(rec.id, [{ name: fileName, bytes: enc.encode(text) }]);
+      } catch {
+        /* storage disabled */
+      }
+    })();
+  }, []);
+
   const pcbFile = useMemo<PickedFile | null>(
     () => standalonePcb ?? projectFiles?.find((f) => /\.kicad_pcb$/i.test(f.name)) ?? null,
     [projectFiles, standalonePcb],
@@ -155,6 +179,11 @@ export function App(): JSX.Element {
           : '',
     [projectFiles, standalonePcb],
   );
+
+  // A different project drops any drawing sheets saved into the previous one.
+  useEffect(() => {
+    setSessionSheets([]);
+  }, [projectName]);
 
   const goHome = useCallback(() => setView('home'), []);
   const showPcb = useCallback(() => {
@@ -279,6 +308,7 @@ export function App(): JSX.Element {
             initialFile={startFile}
             placeRequest={placeRequest}
             onProjectChange={onProjectChange}
+            extraSheetFiles={sessionSheets}
             projectName={projectName}
           />
         </div>
@@ -322,7 +352,11 @@ export function App(): JSX.Element {
       )}
       {dsMounted && (
         <div style={{ display: view === 'drawingsheet' ? 'contents' : 'none' }}>
-          <DrawingSheetEditor onExitToHome={goHome} projectName={projectName} />
+          <DrawingSheetEditor
+            onExitToHome={goHome}
+            projectName={projectName}
+            onSaveToProject={projectFiles ? onSaveToProject : undefined}
+          />
         </div>
       )}
       {imgMounted && (

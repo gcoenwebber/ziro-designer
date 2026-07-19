@@ -129,9 +129,13 @@ const NEW_BASE = {
 export function DrawingSheetEditor({
   onExitToHome,
   projectName,
+  onSaveToProject,
 }: {
   onExitToHome: () => void;
   projectName?: string;
+  /** Save the current sheet into the open project as a `.kicad_wks`. Absent
+   *  when no project is open (the menu item is then hidden). */
+  onSaveToProject?: (fileName: string, text: string) => void;
 }): JSX.Element {
   const [sheet, setSheet] = useState<WksSheet>(() => defaultDrawingSheet());
   const [fileName, setFileName] = useState('drawing_sheet.kicad_wks');
@@ -328,6 +332,18 @@ export function DrawingSheetEditor({
     setDirty(false);
     setStatus(`Saved ${finalName}`);
   }, [fileName, sheet, addRecent]);
+
+  // Save into the open project's files (IndexedDB/cloud), so the schematic's
+  // Page Settings can select it — instead of downloading to local disk.
+  const saveToProject = useCallback(() => {
+    if (!onSaveToProject) return;
+    const name = window.prompt('Save drawing sheet into project as:', fileName) || fileName;
+    const finalName = /\.kicad_wks$/i.test(name) ? name : `${name}.kicad_wks`;
+    onSaveToProject(finalName, serializeDrawingSheet(sheet));
+    setFileName(finalName);
+    setDirty(false);
+    setStatus(`Saved ${finalName} to project`);
+  }, [fileName, sheet, onSaveToProject]);
 
   /** Print the sheet: render the page alone to a bitmap and print that. */
   const printSheet = useCallback(() => {
@@ -977,6 +993,9 @@ export function DrawingSheetEditor({
           { sep: true },
           { label: 'Save', icon: 'save', action: save, shortcut: 'Ctrl+S' },
           { label: 'Save As…', icon: 'saveAs', action: saveAs },
+          ...(onSaveToProject
+            ? [{ label: 'Save to Project…', icon: 'save', action: saveToProject }]
+            : []),
           { sep: true },
           { label: 'Print…', icon: 'print', action: printSheet },
           { sep: true },

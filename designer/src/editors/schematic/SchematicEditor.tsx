@@ -1,5 +1,12 @@
 import type { Vec2 } from '@ziroeda/kimath';
 import { iuToMM, mmToIU, type WksSheet } from '@ziroeda/common';
+import {
+  resolveActiveSheet,
+  readSheetRef,
+  writeSheetRefText,
+  listProjectSheetFiles,
+  parseProjectSheet,
+} from '../drawingsheet/projectSheet.js';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { parse } from '@ziroeda/sexpr';
 import {
@@ -192,6 +199,7 @@ export function SchematicEditor({
   initialFile,
   placeRequest,
   onProjectChange,
+  extraSheetFiles,
   projectName,
 }: {
   onExitToHome: () => void;
@@ -208,6 +216,9 @@ export function SchematicEditor({
   placeRequest?: { lib: LibSymbol; nonce: number } | null;
   /** Autosave hook: called (debounced) with the serialized sheets after edits. */
   onProjectChange?: (files: PickedFile[]) => void;
+  /** `.kicad_wks` saved into the project this session (Drawing Sheet Editor →
+   *  Save to Project), offered as extra Page Settings drawing-sheet choices. */
+  extraSheetFiles?: PickedFile[];
   /** Project name shown as "<project> — Schematic Editor" in the menu bar. */
   projectName?: string;
 }): JSX.Element {
@@ -586,10 +597,37 @@ export function SchematicEditor({
   // Page Settings (DIALOG_PAGES_SETTINGS), Print (DIALOG_PRINT) and Plot
   // (DIALOG_PLOT_SCHEMATIC) dialogs — open flags.
   const [pageSettingsOpen, setPageSettingsOpen] = useState(false);
-  // Custom drawing sheet (a loaded `.kicad_wks`), or null for the built-in
-  // default. KiCad keeps this as the project's m_DrawingSheetFileName.
-  const [drawingSheet, setDrawingSheet] = useState<WksSheet | null>(null);
-  const [drawingSheetName, setDrawingSheetName] = useState('');
+  // Raw project files (kept for the .kicad_pro drawing-sheet reference and the
+  // project's .kicad_wks files); reseeded whenever a project is (re)opened.
+  const [rawFiles, setRawFiles] = useState<PickedFile[]>(() => initialProject ?? []);
+  // In-session Page Settings override of the drawing sheet: `name` '' = built-in
+  // default. Persisted to .kicad_pro (schematic.page_layout_descr_file) on OK;
+  // otherwise the sheet is resolved from the project like KiCad does.
+  const [sheetOverride, setSheetOverride] = useState<{
+    name: string;
+    sheet: WksSheet | null;
+  } | null>(null);
+  // Project files plus any .kicad_wks saved this session (the .kicad_pro
+  // reference lives in rawFiles; the sheets themselves may come from either).
+  const allFiles = useMemo(
+    () => (extraSheetFiles?.length ? [...rawFiles, ...extraSheetFiles] : rawFiles),
+    [rawFiles, extraSheetFiles],
+  );
+  // The drawing sheet to draw (override else the project reference), its file
+  // name for the dialog, and the project's .kicad_wks choices.
+  const activeSheet = useMemo(
+    () => (sheetOverride ? sheetOverride.sheet : resolveActiveSheet(allFiles)),
+    [allFiles, sheetOverride],
+  );
+  const sheetRefName = sheetOverride ? sheetOverride.name : readSheetRef(rawFiles);
+  const sheetChoices = useMemo(
+    () =>
+      listProjectSheetFiles(allFiles).map((name) => ({
+        name,
+        sheet: parseProjectSheet(allFiles, name),
+      })),
+    [allFiles],
+  );
   const [printOpen, setPrintOpen] = useState(false);
   const [plotOpen, setPlotOpen] = useState(false);
   // Paste Special (DIALOG_PASTE_SPECIAL): pick the PASTE_MODE before pasting.
@@ -629,9 +667,18 @@ export function SchematicEditor({
   const applyPageSettings = useCallback(
     (next: PageSettings, exports: PageExportFlags, sheet: WksSheet | null, sheetName: string) => {
       runCommand(setPageSettingsCommand(next));
-      // Adopt the chosen drawing sheet (null = built-in default stationery).
-      setDrawingSheet(sheet);
-      setDrawingSheetName(sheetName);
+      // Adopt the chosen drawing sheet (name '' = built-in default) and persist
+      // it into .kicad_pro (schematic.page_layout_descr_file), like KiCad.
+      setSheetOverride({ name: sheetName, sheet });
+      setRawFiles((prev) => {
+        const pro = prev.find((f) => /\.kicad_pro$/i.test(f.name));
+        if (!pro) return prev;
+        const updated = writeSheetRefText(pro.text, sheetName);
+        if (updated === null || updated === pro.text) return prev;
+        const changed = { name: pro.name, text: updated };
+        onProjectChange?.([changed]);
+        return prev.map((f) => (f.name === pro.name ? changed : f));
+      });
       const anyExport =
         exports.paper ||
         exports.date ||
@@ -686,11 +733,11 @@ export function SchematicEditor({
     (opts: PlotOpts, themeId?: string) => {
       const printTheme =
         themeId && BUILTIN_THEMES[themeId] ? BUILTIN_THEMES[themeId]!.theme : theme;
-      const o = drawingSheet ? { ...opts, sheet: drawingSheet } : opts;
+      const o = activeSheet ? { ...opts, sheet: activeSheet } : opts;
       if (doc) printSheet(doc, printTheme, o, outputBaseName());
       setPrintOpen(false);
     },
-    [doc, theme, outputBaseName, drawingSheet],
+    [doc, theme, outputBaseName, activeSheet],
   );
 
   // Bulk Edit Symbol Fields: apply the changed cells per sheet — the current
@@ -729,7 +776,7 @@ export function SchematicEditor({
   const doPlot = useCallback(
     (format: PlotFormat, opts: PlotOpts, allPages: boolean, themeId?: string) => {
       const plotTheme = themeId && BUILTIN_THEMES[themeId] ? BUILTIN_THEMES[themeId]!.theme : theme;
-      const o = drawingSheet ? { ...opts, sheet: drawingSheet } : opts;
+      const o = activeSheet ? { ...opts, sheet: activeSheet } : opts;
       const one = (d: Schematic, name: string): void => {
         if (format === 'svg') plotSvg(d, plotTheme, o, name);
         else if (format === 'png') void plotPng(d, plotTheme, o, name);
@@ -741,7 +788,7 @@ export function SchematicEditor({
       } else if (doc) one(doc, outputBaseName());
       setPlotOpen(false);
     },
-    [doc, theme, outputBaseName, liveDocs, drawingSheet],
+    [doc, theme, outputBaseName, liveDocs, activeSheet],
   );
   useEffect(() => {
     // Changed search settings restart the scan (upstream m_foundItemHighlight reset).
@@ -864,6 +911,10 @@ export function SchematicEditor({
   useEffect(() => {
     if (initialProject && initialProject.length > 0)
       void loadProject(initialProject, initialFile ?? undefined);
+    // Reseed the raw files (drawing-sheet reference + .kicad_wks choices) and
+    // drop any in-session sheet override for the freshly opened project.
+    setRawFiles(initialProject ?? []);
+    setSheetOverride(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialProject]);
 
@@ -1259,7 +1310,7 @@ export function SchematicEditor({
       showHiddenPins: es.appearance.show_hidden_pins,
       showHiddenFields: es.appearance.show_hidden_fields,
       showPageLimits: es.appearance.show_page_limits,
-      ...(drawingSheet ? { drawingSheet } : {}),
+      ...(activeSheet ? { drawingSheet: activeSheet } : {}),
       // Default pen for zero-width strokes = Schematic Setup > Formatting's
       // "Default line width" (SCHEMATIC_SETTINGS::m_DefaultLineWidth), mils→IU.
       defaultPenIU: mmToIU((setup.formatting.defaultLineWidthMils * 25.4) / 1000),
@@ -1288,7 +1339,7 @@ export function SchematicEditor({
         },
       },
     }),
-    [es, drawingSheet],
+    [es, activeSheet],
   );
 
   const inputPrefs = useMemo<InputPrefs>(
@@ -2338,8 +2389,8 @@ export function SchematicEditor({
               value={getPageSettings(doc)}
               sheetCount={flatSheets.length}
               sheetNumber={Number(pageNumberOf(currentPath)) || 1}
-              drawingSheet={drawingSheet}
-              drawingSheetName={drawingSheetName}
+              sheetChoices={sheetChoices}
+              drawingSheetName={sheetRefName}
               onOk={applyPageSettings}
               onCancel={() => setPageSettingsOpen(false)}
             />
