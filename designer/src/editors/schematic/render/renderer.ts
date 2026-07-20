@@ -1937,12 +1937,13 @@ export function renderSymbolPreview(
   width: number,
   height: number,
   theme: Theme,
+  unit = 1,
 ): void {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = theme.background;
   ctx.fillRect(0, 0, width, height);
 
-  const units = lib.units.filter((u) => libUnitMatches(u, 1, 1));
+  const units = lib.units.filter((u) => libUnitMatches(u, unit > 0 ? unit : 1, 1));
   let minX = Infinity,
     minY = Infinity,
     maxX = -Infinity,

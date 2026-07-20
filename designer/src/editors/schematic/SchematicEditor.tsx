@@ -64,6 +64,7 @@ import {
   makeImage,
   makeTextBox,
   makeTable,
+  buildPropertyNode,
   History,
   type Schematic,
   type LibSymbol,
@@ -87,7 +88,11 @@ import {
 import { LabelDialog } from './components/LabelDialog.js';
 import { SymbolPropertiesDialog } from './components/SymbolPropertiesDialog.js';
 import { ErcDialog } from './components/ErcDialog.js';
-import { SymbolChooser } from './components/SymbolChooser.js';
+import {
+  DialogSymbolChooser,
+  type PickedSymbol,
+  type SymbolChooserResult,
+} from './dialogs/dialog_symbol_chooser.js';
 import { SymbolLibraryBrowser } from './components/SymbolLibraryBrowser.js';
 import { Toolbar } from '../../ui/Toolbar.js';
 import { TOP_TOOLBAR, LEFT_TOOLBAR, RIGHT_TOOLBAR } from './toolbars_sch_editor.js';
@@ -189,6 +194,11 @@ export interface PickedFile {
 
 const DEFAULT_FILE = 'untitled.kicad_sch';
 
+// The chooser's "Recently Used" group persists across dialog openings for the
+// session (sch_drawing_tools.cpp s_SymbolHistoryList / s_PowerHistoryList).
+const sSymbolHistoryList: PickedSymbol[] = [];
+const sPowerHistoryList: PickedSymbol[] = [];
+
 export function SchematicEditor({
   onExitToHome,
   onShowPcb,
@@ -257,6 +267,10 @@ export function SchematicEditor({
   const controller = useRef<CanvasController>(null);
   const [activeTool, setActiveTool] = useState('select');
   const [placeLib, setPlaceLib] = useState<LibSymbol | null>(null);
+  // Unit attached to the cursor, and the chooser's checkbox state driving the
+  // after-placement continuation (KeepSymbol / PlaceAllUnits stepping).
+  const [placeUnit, setPlaceUnit] = useState(1);
+  const placeFlags = useRef({ keepSymbol: true, placeAllUnits: false, unitCount: 1 });
   const [pendingLabel, setPendingLabel] = useState<PendingLabel | null>(null);
   // Right-toolbar drawing state: a drawn sheet awaiting its name/file, a sheet-pin
   // click awaiting its name, an image chosen and following the cursor.
@@ -529,6 +543,107 @@ export function SchematicEditor({
     return docs;
   }, [doc, currentFile]);
 
+  // ----- Choose Symbol dialog (DIALOG_SYMBOL_CHOOSER) ----------------------------
+  const chooserOpen = (activeTool === 'placeSymbol' || activeTool === 'placePower') && !placeLib;
+
+  // The chooser's "-- Already Placed --" group: every distinct library symbol
+  // used anywhere in the hierarchy, filtered to the tool's power-symbol flavour
+  // (sch_drawing_tools.cpp builds the same list before PickSymbolFromLibrary).
+  const alreadyPlaced = useMemo<PickedSymbol[]>(() => {
+    if (!chooserOpen) return [];
+    const powerOnly = activeTool === 'placePower';
+    const seen = new Set<string>();
+    const out: PickedSymbol[] = [];
+    for (const d of liveDocs().values()) {
+      const libs = new Map(d.libSymbols.map((l) => [l.libId, l]));
+      for (const s of d.symbols) {
+        if (seen.has(s.libId)) continue;
+        seen.add(s.libId);
+        const lib = libs.get(s.libId);
+        if (lib && lib.isPower === powerOnly) out.push({ libId: s.libId, unit: 1, fields: [] });
+      }
+    }
+    return out;
+  }, [chooserOpen, activeTool, liveDocs]);
+
+  // Resolve a LIB_ID from the schematics' embedded library caches, so the
+  // chooser groups show descriptions/units without refetching libraries.
+  const getPlacedLibSymbol = useCallback(
+    (libId: string): LibSymbol | undefined => {
+      const own = libById.get(libId);
+      if (own) return own;
+      for (const d of liveDocs().values()) {
+        const hit = d.libSymbols.find((l) => l.libId === libId);
+        if (hit) return hit;
+      }
+      return undefined;
+    },
+    [libById, liveDocs],
+  );
+
+  const onChooserOk = useCallback(
+    (result: SymbolChooserResult | null) => {
+      // OK with nothing selected returns an invalid LIB_ID; the tool ignores
+      // it and the chooser comes straight back (sch_drawing_tools.cpp).
+      if (!result) return;
+      const { symbol, unit, fields, keepSymbol, placeAllUnits } = result;
+
+      // Field edits (the footprint override) land on the embedded library copy.
+      let lib = symbol;
+      for (const [key, value] of fields) {
+        const properties = lib.properties.some((p) => p.key === key)
+          ? lib.properties.map((p) => (p.key === key ? { ...p, value } : p))
+          : [
+              ...lib.properties,
+              (() => {
+                const field = {
+                  key,
+                  value,
+                  angle: 0,
+                  effects: { hidden: true, fontSize: [12700, 12700] as [number, number] },
+                };
+                return { ...field, source: buildPropertyNode(field) };
+              })(),
+            ];
+        lib = { ...lib, properties };
+      }
+
+      const unitCount = new Set(lib.units.map((u) => u.unit).filter((u) => u > 0)).size || 1;
+      placeFlags.current = { keepSymbol, placeAllUnits, unitCount };
+      setPlaceUnit(unit > 0 ? unit : 1);
+
+      // AddSymbolToHistory: most recent first, deduplicated by LIB_ID.
+      const hist = activeTool === 'placePower' ? sPowerHistoryList : sSymbolHistoryList;
+      const dup = hist.findIndex((h) => h.libId === symbol.libId);
+      if (dup >= 0) hist.splice(dup, 1);
+      hist.unshift({ libId: symbol.libId, unit: unit > 0 ? unit : 1, fields });
+
+      setPlaceLib(lib);
+    },
+    [activeTool],
+  );
+
+  // After each placement: step to the next unit ("Place all units"), keep the
+  // symbol attached ("Place repeated copies"), or clear it so the chooser
+  // reopens — mirroring the continuation in SCH_DRAWING_TOOLS::PlaceSymbol.
+  const onSymbolPlaced = useCallback(() => {
+    const { keepSymbol, placeAllUnits, unitCount } = placeFlags.current;
+    if (placeAllUnits && unitCount > 1) {
+      if (placeUnit < unitCount) {
+        setPlaceUnit(placeUnit + 1);
+        return;
+      }
+      if (keepSymbol) {
+        setPlaceUnit(1); // wrap around and keep cycling
+        return;
+      }
+    } else if (keepSymbol) {
+      return; // same symbol stays on the cursor
+    }
+    setPlaceLib(null);
+    setPlaceUnit(1);
+  }, [placeUnit]);
+
   // The stored page number of the sheet instance at `path`
   // (SCH_SHEET_PATH::GetPageNumber): the root sheet from the document-level
   // sheet_instances, a sub-sheet from its object's instances in the parent doc.
@@ -770,6 +885,7 @@ export function SchematicEditor({
     setPendingLabel(null);
     setActiveTool('select');
     setPlaceLib(null);
+    setPlaceUnit(1);
     setPastePending(null);
     setErcResult(null);
     setPropsTarget(null);
@@ -904,6 +1020,8 @@ export function SchematicEditor({
   // cursor exactly as the Place Symbol tool does after its chooser.
   useEffect(() => {
     if (!placeRequest) return;
+    placeFlags.current = { keepSymbol: true, placeAllUnits: false, unitCount: 1 };
+    setPlaceUnit(1);
     setPlaceLib(placeRequest.lib);
     setActiveTool('placeSymbol');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2253,6 +2371,8 @@ export function SchematicEditor({
             activeTool={activeTool}
             lineMode={lineMode}
             placeLib={placeLib}
+            placeUnit={placeUnit}
+            onSymbolPlaced={onSymbolPlaced}
             pendingLabel={pendingLabel}
             highlight={highlightWires}
             theme={theme}
@@ -2454,6 +2574,8 @@ export function SchematicEditor({
             <SymbolLibraryBrowser
               onPick={(lib) => {
                 setBrowserOpen(false);
+                placeFlags.current = { keepSymbol: true, placeAllUnits: false, unitCount: 1 };
+                setPlaceUnit(1);
                 setPlaceLib(lib);
                 setActiveTool('placeSymbol');
               }}
@@ -2500,12 +2622,15 @@ export function SchematicEditor({
         </span>
       </div>
 
-      {(activeTool === 'placeSymbol' || activeTool === 'placePower') && !placeLib && (
-        <SymbolChooser
-          onPick={setPlaceLib}
+      {chooserOpen && (
+        <DialogSymbolChooser
+          powerFilter={activeTool === 'placePower'}
+          showFootprints={es.appearance.footprint_preview}
+          historyList={activeTool === 'placePower' ? sPowerHistoryList : sSymbolHistoryList}
+          alreadyPlaced={alreadyPlaced}
+          getPlacedLibSymbol={getPlacedLibSymbol}
+          onOk={onChooserOk}
           onCancel={() => setActiveTool('select')}
-          powerOnly={activeTool === 'placePower'}
-          showFootprintPreview={es.appearance.footprint_preview}
         />
       )}
 

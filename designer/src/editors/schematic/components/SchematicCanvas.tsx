@@ -273,6 +273,10 @@ interface Props {
   activeTool: string;
   lineMode: LineMode;
   placeLib: LibSymbol | null;
+  /** Unit of `placeLib` attached to the cursor ("Place all units" stepping). */
+  placeUnit?: number;
+  /** A symbol was just placed — the editor steps units / reopens the chooser. */
+  onSymbolPlaced?: () => void;
   /** A named label that follows the cursor until clicked to place (null = none yet). */
   pendingLabel: PendingLabel | null;
   /** Wire ids whose net is highlighted (KiCad's net-highlight overlay). */
@@ -356,6 +360,8 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
     activeTool,
     lineMode,
     placeLib,
+    placeUnit = 1,
+    onSymbolPlaced,
     pendingLabel,
     highlight,
     onSelect,
@@ -573,7 +579,9 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       cursorRef.current
     ) {
       // Ghost: show the symbol attached to the cursor (with its current orientation).
-      doc = placeSymbol(placeLib, snap(cursorRef.current), placeOrientRef.current).apply(schematic);
+      doc = placeSymbol(placeLib, snap(cursorRef.current), placeOrientRef.current, placeUnit).apply(
+        schematic,
+      );
     }
     // Ghost: the named label follows the cursor (with its flag) until clicked to place.
     if (pendingLabel && cursorRef.current) {
@@ -730,6 +738,7 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
     activeTool,
     lineMode,
     placeLib,
+    placeUnit,
     pendingLabel,
     pastePending,
     pendingImage,
@@ -1132,7 +1141,12 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       }
 
       if (activeTool === 'placeSymbol' || activeTool === 'placePower') {
-        if (placeLib) onCommand(placeSymbol(placeLib, snap(world), placeOrientRef.current)); // stays active to place more
+        if (placeLib) {
+          onCommand(placeSymbol(placeLib, snap(world), placeOrientRef.current, placeUnit));
+          // The editor steps to the next unit, keeps placing copies, or
+          // reopens the chooser (sch_drawing_tools.cpp after commit.Push).
+          onSymbolPlaced?.();
+        }
         return;
       }
 
@@ -1211,6 +1225,8 @@ export const SchematicCanvas = forwardRef<CanvasController, Props>(function Sche
       activeTool,
       lineMode,
       placeLib,
+      placeUnit,
+      onSymbolPlaced,
       pendingLabel,
       pastePending,
       pendingImage,
