@@ -83,11 +83,16 @@ export const PCB_LAYER_COLORS: Record<string, string> = {
 
 /** Special (virtual) layer colors used by the painter. */
 export const PCB_SPECIAL = {
-  padPlatedHole: rgba(194, 194, 0),
+  // pcb_painter.cpp:158 forces LAYER_PAD_PLATEDHOLES to the background color at
+  // render time (it isn't theme-able), so a plated drill reads as a real empty
+  // hole — not the theme's 194,194,0. Only via holes / NPTH keep their colors.
+  padPlatedHole: PCB_BACKGROUND,
   nonPlatedHole: rgba(26, 196, 210),
   viaHole: rgba(227, 183, 46),
   viaHoleWall: rgba(236, 236, 236),
-  padHoleWall: rgba(236, 236, 236),
+  // pcb_painter.cpp:293 draws pad hole walls in the via "golden copper" hole
+  // color (LAYER_VIA_HOLES) for contrast — an amber plating ring, not gray.
+  padHoleWall: rgba(227, 183, 46),
   ratsnest: rgba(0, 248, 255, 0.35),
   anchor: rgba(255, 38, 226),
   drawingSheet: rgba(200, 114, 171),
