@@ -18,6 +18,9 @@ import {
   parseBoardItemId,
   moveBoardItems,
   dragBoardItems,
+  setFootprintField,
+  setFootprintLocked,
+  setFootprintOrientation,
   connectedTrackEnds,
   boardItemId,
   subsetBoardItems,
@@ -639,17 +642,28 @@ export function PcbEditor({
     [setBoardModel],
   );
 
-  // Edit a footprint's board-absolute position from the Properties grid (mm →
-  // IU); reuses the tested moveBoardItems so children/undo follow.
-  const editFootprintPos = useCallback(
-    (index: number, axis: 'x' | 'y', valueMM: number): void => {
+  // Apply a footprint edit from the Properties grid, committing to the board
+  // (children + undo follow). Mirrors the PCB_PROPERTIES_PANEL edits.
+  const editFootprint = useCallback(
+    (index: number, e: FpEdit): void => {
       const brd = boardRef.current;
       const fp = brd?.footprints[index];
-      if (!brd || !fp || !Number.isFinite(valueMM)) return;
-      const target = Math.round(valueMM * MM);
-      const delta = axis === 'x' ? { x: target - fp.at.x, y: 0 } : { x: 0, y: target - fp.at.y };
-      if (delta.x === 0 && delta.y === 0) return;
-      commitBoard(moveBoardItems(brd, new Set([boardItemId('footprint', index)]), delta));
+      if (!brd || !fp) return;
+      if (e.kind === 'pos') {
+        if (!Number.isFinite(e.valueMM)) return;
+        const target = Math.round(e.valueMM * MM);
+        const delta =
+          e.axis === 'x' ? { x: target - fp.at.x, y: 0 } : { x: 0, y: target - fp.at.y };
+        if (delta.x === 0 && delta.y === 0) return;
+        commitBoard(moveBoardItems(brd, new Set([boardItemId('footprint', index)]), delta));
+      } else if (e.kind === 'orient') {
+        if (!Number.isFinite(e.deg)) return;
+        commitBoard(setFootprintOrientation(brd, index, e.deg));
+      } else if (e.kind === 'field') {
+        commitBoard(setFootprintField(brd, index, e.field, e.value));
+      } else if (e.kind === 'locked') {
+        commitBoard(setFootprintLocked(brd, index, e.locked));
+      }
     },
     [commitBoard],
   );
@@ -1544,7 +1558,7 @@ export function PcbEditor({
                   <PcbSelectionInfo
                     board={board}
                     selection={selection}
-                    onEditFootprintPos={editFootprintPos}
+                    onEditFootprint={editFootprint}
                   />
                 )}
               </div>
@@ -2021,10 +2035,24 @@ const PgRO = ({ label, value }: { label: string; value: string }): JSX.Element =
     </div>
   </div>
 );
-/** A checkbox value (read-only for now). */
-const PgCheck = ({ label, checked }: { label: string; checked: boolean }): JSX.Element => (
+/** A checkbox value; editable when `onChange` is supplied. */
+const PgCheck = ({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange?: (v: boolean) => void;
+}): JSX.Element => (
   <PgRow label={label}>
-    <input type="checkbox" checked={checked} readOnly style={{ margin: 0 }} />
+    <input
+      type="checkbox"
+      checked={checked}
+      readOnly={!onChange}
+      onChange={onChange ? (e) => onChange(e.target.checked) : undefined}
+      style={{ margin: 0 }}
+    />
   </PgRow>
 );
 /** A layer value: color swatch + name. */
@@ -2100,15 +2128,22 @@ const fmtOrient = (deg: number): string => {
   return String(Number.parseFloat(a.toFixed(4)));
 };
 
-/** The FOOTPRINT property grid (collapsible categories; editable Position). */
+/** A footprint edit from the Properties grid (PCB_PROPERTIES_PANEL fields). */
+type FpEdit =
+  | { kind: 'pos'; axis: 'x' | 'y'; valueMM: number }
+  | { kind: 'orient'; deg: number }
+  | { kind: 'field'; field: 'reference' | 'value'; value: string }
+  | { kind: 'locked'; locked: boolean };
+
+/** The FOOTPRINT property grid (collapsible categories; editable fields). */
 function FootprintProps({
   fp,
   index,
-  onEditPos,
+  onEdit,
 }: {
   fp: PcbFootprint;
   index: number;
-  onEditPos?: (index: number, axis: 'x' | 'y', valueMM: number) => void;
+  onEdit?: (index: number, e: FpEdit) => void;
 }): JSX.Element {
   const [open, setOpen] = useState<Record<string, boolean>>({
     Basic: true,
@@ -2130,24 +2165,55 @@ function FootprintProps({
             label="Position X"
             value={mm(fp.at.x)}
             suffix="mm"
-            onCommit={onEditPos ? (v) => onEditPos(index, 'x', Number.parseFloat(v)) : undefined}
+            onCommit={
+              onEdit
+                ? (v) => onEdit(index, { kind: 'pos', axis: 'x', valueMM: Number(v) })
+                : undefined
+            }
           />
           <PgEdit
             label="Position Y"
             value={mm(fp.at.y)}
             suffix="mm"
-            onCommit={onEditPos ? (v) => onEditPos(index, 'y', Number.parseFloat(v)) : undefined}
+            onCommit={
+              onEdit
+                ? (v) => onEdit(index, { kind: 'pos', axis: 'y', valueMM: Number(v) })
+                : undefined
+            }
           />
-          <PgCheck label="Locked" checked={!!fp.locked} />
+          <PgCheck
+            label="Locked"
+            checked={!!fp.locked}
+            onChange={onEdit ? (c) => onEdit(index, { kind: 'locked', locked: c }) : undefined}
+          />
           <PgLayer label="Layer" layer={fp.layer} color={layerColor(fp.layer)} />
-          <PgEdit label="Orientation" value={fmtOrient(fp.angle)} suffix="°" />
+          <PgEdit
+            label="Orientation"
+            value={fmtOrient(fp.angle)}
+            suffix="°"
+            onCommit={onEdit ? (v) => onEdit(index, { kind: 'orient', deg: Number(v) }) : undefined}
+          />
         </>
       )}
       <PgCat label="Fields" open={open.Fields ?? true} onToggle={() => toggle('Fields')} />
       {(open.Fields ?? true) && (
         <>
-          <PgEdit label="Reference" value={fp.reference ?? ''} />
-          <PgEdit label="Value" value={fp.value ?? ''} />
+          <PgEdit
+            label="Reference"
+            value={fp.reference ?? ''}
+            onCommit={
+              onEdit
+                ? (v) => onEdit(index, { kind: 'field', field: 'reference', value: v })
+                : undefined
+            }
+          />
+          <PgEdit
+            label="Value"
+            value={fp.value ?? ''}
+            onCommit={
+              onEdit ? (v) => onEdit(index, { kind: 'field', field: 'value', value: v }) : undefined
+            }
+          />
           <PgRO label="Library Link" value={fp.lib} />
           <PgRO label="Library Description" value={fp.descr ?? ''} />
           <PgRO label="Keywords" value={fp.tags ?? ''} />
@@ -2189,11 +2255,11 @@ function FootprintProps({
 function PcbSelectionInfo({
   board,
   selection,
-  onEditFootprintPos,
+  onEditFootprint,
 }: {
   board: Board | null;
   selection: ReadonlySet<string>;
-  onEditFootprintPos?: (index: number, axis: 'x' | 'y', valueMM: number) => void;
+  onEditFootprint?: (index: number, e: FpEdit) => void;
 }): JSX.Element {
   const mm = (iu: number): string => iuToMM(iu).toFixed(4);
   const ids = [...selection];
@@ -2262,7 +2328,7 @@ function PcbSelectionInfo({
         }
         case 'footprint': {
           const f = board.footprints[ref.index];
-          if (f) return <FootprintProps fp={f} index={ref.index} onEditPos={onEditFootprintPos} />;
+          if (f) return <FootprintProps fp={f} index={ref.index} onEdit={onEditFootprint} />;
           break;
         }
         case 'zone': {

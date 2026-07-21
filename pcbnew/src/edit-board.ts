@@ -688,6 +688,78 @@ export function dragBoardItems(board: Board, ids: ReadonlySet<string>, delta: Ve
   };
 }
 
+// ----- footprint field edits (PCB_PROPERTIES_PANEL) ---------------------------
+
+/** Replace the `argIndex`-th positional atom (head = atom 0) of a source list. */
+function replaceArg(src: SList, argIndex: number, value: string): SList {
+  let atomN = -1;
+  const target = argIndex + 1;
+  const items = src.items.map((it) => {
+    if (!isList(it)) {
+      atomN++;
+      if (atomN === target) return str(value);
+    }
+    return it;
+  });
+  return { kind: 'list', items };
+}
+
+/** Drop every `name` child from a source list. */
+function removeChild(src: SList, name: string): SList {
+  return { kind: 'list', items: src.items.filter((it) => !(isList(it) && head(it) === name)) };
+}
+
+const replaceFp = (board: Board, index: number, fp: PcbFootprint): Board => ({
+  ...board,
+  footprints: board.footprints.map((f, i) => (i === index ? fp : f)),
+});
+
+/**
+ * Set a footprint's Reference or Value text. The writer emits these from the
+ * model's text items (their own `(property …)` / `(fp_text …)` source), so we
+ * patch each matching text item's text and its source's value atom (arg 1).
+ */
+export function setFootprintField(
+  board: Board,
+  index: number,
+  field: 'reference' | 'value',
+  value: string,
+): Board {
+  const f = board.footprints[index];
+  if (!f) return board;
+  const patchTextSrc = (src: SList): SList => {
+    const h = head(src);
+    return h === 'property' || h === 'fp_text' ? replaceArg(src, 1, value) : src;
+  };
+  return replaceFp(board, index, {
+    ...f,
+    reference: field === 'reference' ? value : f.reference,
+    value: field === 'value' ? value : f.value,
+    texts: f.texts.map((t) =>
+      t.kind === field ? { ...t, text: value, source: patchTextSrc(t.source) } : t,
+    ),
+  });
+}
+
+/** Lock or unlock a footprint (`(locked yes)`). */
+export function setFootprintLocked(board: Board, index: number, locked: boolean): Board {
+  const f = board.footprints[index];
+  if (!f) return board;
+  const source = locked
+    ? patchChild(f.source, 'locked', list(atom('locked'), atom('yes')))
+    : removeChild(f.source, 'locked');
+  return replaceFp(board, index, { ...f, locked, source });
+}
+
+/** Set a footprint's absolute orientation (degrees), rotating about its anchor. */
+export function setFootprintOrientation(board: Board, index: number, deg: number): Board {
+  const f = board.footprints[index];
+  if (!f || !Number.isFinite(deg)) return board;
+  const delta = deg - f.angle;
+  if (delta === 0) return board;
+  return replaceFp(board, index, rotateFootprintAbout(f, f.at, delta));
+}
+
 // ----- delete (EDIT_TOOL::Remove) ---------------------------------------------
 
 /** Split a selection id set into per-kind index sets. */
@@ -788,6 +860,25 @@ const rotShapeCoords = <
   return n as Partial<T>;
 };
 
+/** Rotate a whole footprint by `deg` about centre `c` (anchor + children + source). */
+function rotateFootprintAbout(f: PcbFootprint, c: Vec2, deg: number): PcbFootprint {
+  const at = rotAbout(f.at, c, deg);
+  const angle = norm360(f.angle + deg);
+  return {
+    ...f,
+    at,
+    angle,
+    pads: f.pads.map((p) => ({ ...p, at: rotAbout(p.at, c, deg), angle: norm360(p.angle + deg) })),
+    texts: f.texts.map((t) => ({
+      ...t,
+      at: rotAbout(t.at, c, deg),
+      angle: norm360(t.angle + deg),
+    })),
+    shapes: f.shapes.map((s) => ({ ...s, ...rotShapeCoords(s, c, deg) })),
+    source: patchChild(f.source, 'at', atNode(at, angle)),
+  };
+}
+
 /**
  * Rotate the selected items by ±90° about a centre (EDIT_TOOL::Rotate).
  * `ccw` picks the direction; `center` defaults to the selection's bounding-box
@@ -846,27 +937,7 @@ export function rotateBoardItems(
     if (next.pts) src = patchChild(src, 'pts', ptsNode(next.pts));
     return { ...next, source: src };
   };
-  const rotFootprint = (f: PcbFootprint): PcbFootprint => {
-    const at = rotAbout(f.at, c, deg),
-      angle = norm360(f.angle + deg);
-    return {
-      ...f,
-      at,
-      angle,
-      pads: f.pads.map((p) => ({
-        ...p,
-        at: rotAbout(p.at, c, deg),
-        angle: norm360(p.angle + deg),
-      })),
-      texts: f.texts.map((t) => ({
-        ...t,
-        at: rotAbout(t.at, c, deg),
-        angle: norm360(t.angle + deg),
-      })),
-      shapes: f.shapes.map((s) => ({ ...s, ...rotShapeCoords(s, c, deg) })),
-      source: patchChild(f.source, 'at', atNode(at, angle)),
-    };
-  };
+  const rotFootprint = (f: PcbFootprint): PcbFootprint => rotateFootprintAbout(f, c, deg);
 
   return {
     ...board,
