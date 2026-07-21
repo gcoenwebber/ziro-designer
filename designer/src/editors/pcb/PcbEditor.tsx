@@ -27,6 +27,7 @@ import {
   serializeBoard,
   type Board,
   type BoardItemKind,
+  type PcbFootprint,
 } from '@ziroeda/pcbnew';
 import { MenuBar, type Menu } from '../../ui/MenuBar.js';
 import { Toolbar } from '../../ui/Toolbar.js';
@@ -636,6 +637,21 @@ export function PcbEditor({
       setBoardModel(next);
     },
     [setBoardModel],
+  );
+
+  // Edit a footprint's board-absolute position from the Properties grid (mm →
+  // IU); reuses the tested moveBoardItems so children/undo follow.
+  const editFootprintPos = useCallback(
+    (index: number, axis: 'x' | 'y', valueMM: number): void => {
+      const brd = boardRef.current;
+      const fp = brd?.footprints[index];
+      if (!brd || !fp || !Number.isFinite(valueMM)) return;
+      const target = Math.round(valueMM * MM);
+      const delta = axis === 'x' ? { x: target - fp.at.x, y: 0 } : { x: 0, y: target - fp.at.y };
+      if (delta.x === 0 && delta.y === 0) return;
+      commitBoard(moveBoardItems(brd, new Set([boardItemId('footprint', index)]), delta));
+    },
+    [commitBoard],
   );
 
   const undo = useCallback(() => {
@@ -1525,7 +1541,11 @@ export function PcbEditor({
                 {selection.size === 0 ? (
                   <div className="ze-muted">No objects selected</div>
                 ) : (
-                  <PcbSelectionInfo board={board} selection={selection} />
+                  <PcbSelectionInfo
+                    board={board}
+                    selection={selection}
+                    onEditFootprintPos={editFootprintPos}
+                  />
                 )}
               </div>
             </div>
@@ -1962,110 +1982,52 @@ function describeBoardItem(board: Board, id: string): string {
   }
 }
 
-// ---- KiCad property-grid primitives (PCB_PROPERTIES_PANEL wxPropertyGrid) ----
-const PG_LABEL_W = '48%';
-const PgGroup = ({ label }: { label: string }): JSX.Element => (
-  <div
-    style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: 5,
-      padding: '3px 4px',
-      background: 'rgba(255,255,255,0.06)',
-      fontWeight: 600,
-      borderBottom: '1px solid rgba(255,255,255,0.1)',
-    }}
-  >
-    <span style={{ fontSize: 8 }}>▼</span>
+// ---- KiCad property-grid components (PCB_PROPERTIES_PANEL wxPropertyGrid) -----
+// White name/value text, grey read-only, category bars with the GTK disclosure
+// chevron reused from the project tree — styled by .ze-pg* in shell.css.
+
+/** A collapsible category header (wxPropertyCategory). */
+const PgCat = ({
+  label,
+  open,
+  onToggle,
+}: {
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+}): JSX.Element => (
+  <div className="ze-pg-cat" onClick={onToggle}>
+    <span className={`twisty expandable${open ? ' open' : ''}`} />
     <span>{label}</span>
   </div>
 );
+/** Name | value row. */
 const PgRow = ({ label, children }: { label: string; children: ReactNode }): JSX.Element => (
-  <div
-    style={{
-      display: 'flex',
-      alignItems: 'stretch',
-      borderBottom: '1px solid rgba(255,255,255,0.06)',
-      minHeight: 22,
-    }}
-  >
-    <div
-      style={{
-        width: PG_LABEL_W,
-        padding: '3px 6px',
-        color: '#9aa4b2',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
-      }}
-    >
+  <div className="ze-pg-row">
+    <div className="k" title={label}>
       {label}
     </div>
-    <div
-      style={{
-        flex: 1,
-        padding: '2px 4px',
-        borderLeft: '1px solid rgba(255,255,255,0.06)',
-        display: 'flex',
-        alignItems: 'center',
-        minWidth: 0,
-      }}
-    >
-      {children}
+    <div className="v">{children}</div>
+  </div>
+);
+/** Read-only value (greyed). */
+const PgRO = ({ label, value }: { label: string; value: string }): JSX.Element => (
+  <div className="ze-pg-row">
+    <div className="k" title={label}>
+      {label}
+    </div>
+    <div className="v ro" title={value}>
+      {value}
     </div>
   </div>
 );
-const PgText = ({
-  label,
-  value,
-  readOnly,
-}: {
-  label: string;
-  value: string;
-  readOnly?: boolean;
-}): JSX.Element => (
-  <PgRow label={label}>
-    {readOnly ? (
-      <span
-        style={{
-          color: '#7f8a99',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {value}
-      </span>
-    ) : (
-      <div
-        style={{
-          flex: 1,
-          padding: '1px 5px',
-          background: '#1c2432',
-          border: '1px solid #2c3647',
-          borderRadius: 2,
-          minHeight: 18,
-          lineHeight: '18px',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {value}
-      </div>
-    )}
-  </PgRow>
-);
+/** A checkbox value (read-only for now). */
 const PgCheck = ({ label, checked }: { label: string; checked: boolean }): JSX.Element => (
   <PgRow label={label}>
-    <input
-      type="checkbox"
-      checked={checked}
-      readOnly
-      style={{ pointerEvents: 'none', margin: 0 }}
-    />
+    <input type="checkbox" checked={checked} readOnly style={{ margin: 0 }} />
   </PgRow>
 );
+/** A layer value: color swatch + name. */
 const PgLayer = ({
   label,
   layer,
@@ -2076,20 +2038,61 @@ const PgLayer = ({
   color: string;
 }): JSX.Element => (
   <PgRow label={label}>
-    <span
-      style={{
-        display: 'inline-block',
-        width: 12,
-        height: 12,
-        background: color,
-        marginRight: 6,
-        border: '1px solid rgba(0,0,0,0.5)',
-        flex: '0 0 auto',
-      }}
-    />
+    <span className="ze-pg-swatch" style={{ background: color }} />
     <span>{layer}</span>
   </PgRow>
 );
+/** An editable value cell: shows text; click to edit; Enter/blur commits. */
+function PgEdit({
+  label,
+  value,
+  suffix,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  suffix?: string;
+  onCommit?: (v: string) => void;
+}): JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const commit = (): void => {
+    setEditing(false);
+    if (onCommit && draft !== value) onCommit(draft);
+  };
+  return (
+    <PgRow label={label}>
+      {editing && onCommit ? (
+        <input
+          className="pg-edit"
+          value={draft}
+          // biome-ignore lint/a11y/noAutofocus: focus the just-opened cell editor
+          autoFocus
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit();
+            else if (e.key === 'Escape') setEditing(false);
+          }}
+        />
+      ) : (
+        <span
+          style={{ cursor: onCommit ? 'text' : 'default', width: '100%' }}
+          onClick={() => {
+            if (onCommit) {
+              setDraft(value);
+              setEditing(true);
+            }
+          }}
+        >
+          {value}
+          {suffix ? ` ${suffix}` : ''}
+        </span>
+      )}
+    </PgRow>
+  );
+}
+
 /** Footprint orientation the KiCad way: normalized to (-180°, 180°], trimmed. */
 const fmtOrient = (deg: number): string => {
   let a = ((deg % 360) + 360) % 360;
@@ -2097,14 +2100,100 @@ const fmtOrient = (deg: number): string => {
   return String(Number.parseFloat(a.toFixed(4)));
 };
 
+/** The FOOTPRINT property grid (collapsible categories; editable Position). */
+function FootprintProps({
+  fp,
+  index,
+  onEditPos,
+}: {
+  fp: PcbFootprint;
+  index: number;
+  onEditPos?: (index: number, axis: 'x' | 'y', valueMM: number) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState<Record<string, boolean>>({
+    Basic: true,
+    Fields: true,
+    Attributes: true,
+    Overrides: true,
+  });
+  const toggle = (g: string): void => setOpen((o) => ({ ...o, [g]: !o[g] }));
+  const mm = (iu: number): string => iuToMM(iu).toFixed(4);
+  const attrs = fp.attributes ?? [];
+  const has = (a: string): boolean => attrs.includes(a);
+  return (
+    <div className="ze-pg">
+      <div className="ze-pg-title">Footprint</div>
+      <PgCat label="Basic Properties" open={open.Basic ?? true} onToggle={() => toggle('Basic')} />
+      {(open.Basic ?? true) && (
+        <>
+          <PgEdit
+            label="Position X"
+            value={mm(fp.at.x)}
+            suffix="mm"
+            onCommit={onEditPos ? (v) => onEditPos(index, 'x', Number.parseFloat(v)) : undefined}
+          />
+          <PgEdit
+            label="Position Y"
+            value={mm(fp.at.y)}
+            suffix="mm"
+            onCommit={onEditPos ? (v) => onEditPos(index, 'y', Number.parseFloat(v)) : undefined}
+          />
+          <PgCheck label="Locked" checked={!!fp.locked} />
+          <PgLayer label="Layer" layer={fp.layer} color={layerColor(fp.layer)} />
+          <PgEdit label="Orientation" value={fmtOrient(fp.angle)} suffix="°" />
+        </>
+      )}
+      <PgCat label="Fields" open={open.Fields ?? true} onToggle={() => toggle('Fields')} />
+      {(open.Fields ?? true) && (
+        <>
+          <PgEdit label="Reference" value={fp.reference ?? ''} />
+          <PgEdit label="Value" value={fp.value ?? ''} />
+          <PgRO label="Library Link" value={fp.lib} />
+          <PgRO label="Library Description" value={fp.descr ?? ''} />
+          <PgRO label="Keywords" value={fp.tags ?? ''} />
+          <PgRO label="Component Class" value="" />
+        </>
+      )}
+      <PgCat
+        label="Attributes"
+        open={open.Attributes ?? true}
+        onToggle={() => toggle('Attributes')}
+      />
+      {(open.Attributes ?? true) && (
+        <>
+          <PgCheck label="Not in Schematic" checked={has('board_only')} />
+          <PgCheck label="Exclude From Position Files" checked={has('exclude_from_pos_files')} />
+          <PgCheck label="Exclude From Bill of Materials" checked={has('exclude_from_bom')} />
+          <PgCheck label="Do not Populate" checked={has('dnp')} />
+        </>
+      )}
+      <PgCat label="Overrides" open={open.Overrides ?? true} onToggle={() => toggle('Overrides')} />
+      {(open.Overrides ?? true) && (
+        <>
+          <PgCheck
+            label="Exempt From Courtyard Requirement"
+            checked={has('allow_missing_courtyard')}
+          />
+          <PgRO label="Clearance Override" value="" />
+          <PgRO label="Solderpaste Margin Override" value="" />
+          <PgRO label="Solderpaste Margin Ratio Override" value="" />
+          <PgRO label="Zone Connection Style" value="Inherited" />
+        </>
+      )}
+    </div>
+  );
+}
+
 /** Read-only summary of the current selection for the Properties panel — the
  *  first slice of pcbnew's PCB_PROPERTIES_PANEL (editable fields come later). */
 function PcbSelectionInfo({
   board,
   selection,
+  onEditFootprintPos,
 }: {
   board: Board | null;
   selection: ReadonlySet<string>;
+  onEditFootprintPos?: (index: number, axis: 'x' | 'y', valueMM: number) => void;
 }): JSX.Element {
   const mm = (iu: number): string => iuToMM(iu).toFixed(4);
   const ids = [...selection];
@@ -2173,48 +2262,7 @@ function PcbSelectionInfo({
         }
         case 'footprint': {
           const f = board.footprints[ref.index];
-          if (f) {
-            // Full FOOTPRINT property grid, mirroring PCB_PROPERTIES_PANEL
-            // (board_item.cpp + footprint.cpp property registrations): Basic
-            // Properties, Fields, Attributes and Overrides groups.
-            const attrs = f.attributes ?? [];
-            const has = (a: string): boolean => attrs.includes(a);
-            return (
-              <div style={{ fontSize: 11 }}>
-                <div style={{ padding: '3px 5px', fontWeight: 600 }}>Footprint</div>
-                <PgGroup label="Basic Properties" />
-                <PgText label="Position X" value={`${mm(f.at.x)} mm`} />
-                <PgText label="Position Y" value={`${mm(f.at.y)} mm`} />
-                <PgCheck label="Locked" checked={!!f.locked} />
-                <PgLayer label="Layer" layer={f.layer} color={layerColor(f.layer)} />
-                <PgText label="Orientation" value={`${fmtOrient(f.angle)}°`} />
-                <PgGroup label="Fields" />
-                <PgText label="Reference" value={f.reference ?? ''} />
-                <PgText label="Value" value={f.value ?? ''} />
-                <PgText label="Library Link" value={f.lib} readOnly />
-                <PgText label="Library Description" value={f.descr ?? ''} readOnly />
-                <PgText label="Keywords" value={f.tags ?? ''} readOnly />
-                <PgText label="Component Class" value="" readOnly />
-                <PgGroup label="Attributes" />
-                <PgCheck label="Not in Schematic" checked={has('board_only')} />
-                <PgCheck
-                  label="Exclude From Position Files"
-                  checked={has('exclude_from_pos_files')}
-                />
-                <PgCheck label="Exclude From Bill of Materials" checked={has('exclude_from_bom')} />
-                <PgCheck label="Do not Populate" checked={has('dnp')} />
-                <PgGroup label="Overrides" />
-                <PgCheck
-                  label="Exempt From Courtyard Requirement"
-                  checked={has('allow_missing_courtyard')}
-                />
-                <PgText label="Clearance Override" value="" />
-                <PgText label="Solderpaste Margin Override" value="" />
-                <PgText label="Solderpaste Margin Ratio Override" value="" />
-                <PgText label="Zone Connection Style" value="Inherited" readOnly />
-              </div>
-            );
-          }
+          if (f) return <FootprintProps fp={f} index={ref.index} onEditPos={onEditFootprintPos} />;
           break;
         }
         case 'zone': {
