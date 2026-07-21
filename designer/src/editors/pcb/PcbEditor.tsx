@@ -208,6 +208,9 @@ export function PcbEditor({
   const [preset, setPreset] = useState('All Layers');
   const [tab, setTab] = useState<'Layers' | 'Objects' | 'Nets'>('Layers');
   const [toggles, setToggles] = useState<Set<string>>(new Set(DEFAULT_TOGGLES));
+  // Properties pane width. KiCad's PCB_PROPERTIES_PANEL docks at BestSize 300,
+  // MinSize 240 (pcb_edit_frame.cpp), and the pane is user-resizable.
+  const [propWidth, setPropWidth] = useState(300);
   const [objects, setObjects] = useState<ObjectState>(DEFAULT_OBJECTS);
   const [opacity, setOpacity] = useState(DEFAULT_OPACITY);
   const [selFilter, setSelFilter] = useState<Set<string>>(
@@ -1237,6 +1240,22 @@ export function PcbEditor({
 
   // ----- toolbar handlers -----------------------------------------------------
 
+  // Drag the splitter on the Properties pane's right edge (KiCad's resizable
+  // AUI pane), clamped to KiCad's MinSize width of 240.
+  const startPropResize = (e: React.PointerEvent): void => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = propWidth;
+    const onMove = (ev: PointerEvent): void =>
+      setPropWidth(Math.max(240, Math.min(600, startW + (ev.clientX - startX))));
+    const onUp = (): void => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
   const onLeftToggle = (id: string): void => {
     setToggles((prev) => {
       const next = new Set(prev);
@@ -1493,16 +1512,13 @@ export function PcbEditor({
       </div>
 
       <div className="ze-body">
-        <Toolbar
-          entries={PCB_LEFT_TOOLBAR}
-          orientation="vertical"
-          side="left"
-          toggled={toggles}
-          onActivate={onLeftToggle}
-        />
-
+        {/* KiCad docks the Properties pane outermost-left (Layer 5), then the
+            left options toolbar (Layer 3), then the canvas. */}
         {showProperties && (
-          <div className="ze-leftdock" style={{ width: 220 }}>
+          <div
+            className="ze-leftdock"
+            style={{ width: propWidth, minWidth: 240, position: 'relative' }}
+          >
             <div className="ze-panel grow">
               <div className="ze-panel-header">Properties</div>
               <div className="ze-panel-body">
@@ -1513,8 +1529,29 @@ export function PcbEditor({
                 )}
               </div>
             </div>
+            <div
+              onPointerDown={startPropResize}
+              title="Resize"
+              style={{
+                position: 'absolute',
+                top: 0,
+                right: 0,
+                width: 5,
+                height: '100%',
+                cursor: 'col-resize',
+                zIndex: 2,
+              }}
+            />
           </div>
         )}
+
+        <Toolbar
+          entries={PCB_LEFT_TOOLBAR}
+          orientation="vertical"
+          side="left"
+          toggled={toggles}
+          onActivate={onLeftToggle}
+        />
 
         <div className="ze-canvas-wrap" ref={wrapRef} style={{ position: 'relative' }}>
           <canvas
@@ -1943,9 +1980,32 @@ function PcbSelectionInfo({
     const ref = parseBoardItemId(ids[0]!);
     const netName = (code: number): string => board.nets.get(code) || `(net ${code})`;
     const row = (k: string, v: string): JSX.Element => (
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '1px 0' }}>
+      <div
+        key={k}
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          gap: 8,
+          padding: '2px 4px',
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+        }}
+      >
         <span className="ze-muted">{k}</span>
-        <span>{v}</span>
+        <span style={{ textAlign: 'right' }}>{v}</span>
+      </div>
+    );
+    // Collapsible-style group header, like KiCad's property-grid categories.
+    const group = (label: string): JSX.Element => (
+      <div
+        key={`g-${label}`}
+        style={{
+          padding: '3px 4px',
+          marginTop: 4,
+          fontWeight: 600,
+          background: 'rgba(255,255,255,0.05)',
+        }}
+      >
+        {label}
       </div>
     );
     if (ref) {
@@ -1991,15 +2051,23 @@ function PcbSelectionInfo({
         }
         case 'footprint': {
           const f = board.footprints[ref.index];
-          if (f)
+          if (f) {
+            // Footprint basics, mirroring PCB_PROPERTIES_PANEL's fields for a
+            // FOOTPRINT (board_item.cpp + footprint.cpp property registrations).
+            const orient = (((f.angle % 360) + 360) % 360).toFixed(4);
             return (
               <div>
-                <b>Footprint</b>
-                {row('Reference', f.reference ?? '—')}
-                {row('Value', f.value ?? '—')}
-                {row('Layer', f.layer)}
+                {row('Position X', `${mm(f.at.x)} mm`)}
+                {row('Position Y', `${mm(f.at.y)} mm`)}
+                {row('Orientation', `${orient}°`)}
+                {row('Layer', f.layer === 'B.Cu' ? 'B.Cu' : 'F.Cu')}
+                {row('Locked', 'No')}
+                {group('Fields')}
+                {row('Reference', f.reference ?? '')}
+                {row('Value', f.value ?? '')}
               </div>
             );
+          }
           break;
         }
         case 'zone': {
