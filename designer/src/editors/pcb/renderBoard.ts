@@ -71,6 +71,11 @@ export interface PcbDrawOptions {
   zoneOutline: boolean;
   /** Show pad clearance outlines (m_Display.m_PadClearance, default on). */
   padClearance: boolean;
+  /** Fill vs sketch (outline) for tracks / vias / pads (m_Display*Fill; default
+   *  filled). Sketch strokes each item's outline at min-pen, like pcb_painter. */
+  trackFill: boolean;
+  viaFill: boolean;
+  padFill: boolean;
 }
 
 /** KiCad defaults (project_local_settings.cpp + s_objectSettings). */
@@ -89,6 +94,9 @@ export const DEFAULT_DRAW_OPTIONS: PcbDrawOptions = {
   zoneOpacity: 0.6,
   zoneOutline: false,
   padClearance: true,
+  trackFill: true,
+  viaFill: true,
+  padFill: true,
 };
 
 interface LayerBuckets {
@@ -98,6 +106,8 @@ interface LayerBuckets {
   hasZoneOutlines: boolean;
   clearance: Path2D; // pad clearance outlines (stroked in the copper color)
   hasClearance: boolean;
+  trackOutlines: Path2D; // track/arc stadium outlines for sketch (unfilled) mode
+  hasTrackOutlines: boolean;
   tracks: Map<number, Path2D>; // width -> segments/arcs (object: Tracks)
   pads: Path2D; // pad flashes (object: Pads)
   hasPads: boolean;
@@ -129,6 +139,8 @@ const newBuckets = (): LayerBuckets => ({
   hasZoneOutlines: false,
   clearance: new Path2D(),
   hasClearance: false,
+  trackOutlines: new Path2D(),
+  hasTrackOutlines: false,
   tracks: new Map(),
   pads: new Path2D(),
   hasPads: false,
@@ -180,6 +192,53 @@ function viaSpan(from: string, to: string, copperNames: string[]): string[] {
   if (i0 < 0 || i1 < 0) return copperNames;
   const [a, b] = i0 <= i1 ? [i0, i1] : [i1, i0];
   return copperNames.slice(a, b + 1);
+}
+
+/**
+ * Stadium outline of a track centreline A→B of width `w` (radius r = w/2): the
+ * two parallel edges plus the semicircular end caps, as a closed subpath. This
+ * is what a track drawn in sketch mode outlines (pcb_painter.cpp DrawSegment in
+ * stroke mode). Caps are sampled to stay independent of arc-direction quirks.
+ */
+function addStadiumOutline(path: Path2D, a: Vec2, b: Vec2, r: number): void {
+  if (r <= 0) return;
+  const ang = Math.atan2(b.y - a.y, b.x - a.x);
+  const N = 8;
+  const pt: [number, number][] = [];
+  // Forward cap around B: from B-perp through B+dir to B+perp.
+  for (let i = 0; i <= N; i++) {
+    const t = ang - Math.PI / 2 + (Math.PI * i) / N;
+    pt.push([b.x + r * Math.cos(t), b.y + r * Math.sin(t)]);
+  }
+  // Backward cap around A: from A+perp through A-dir to A-perp.
+  for (let i = 0; i <= N; i++) {
+    const t = ang + Math.PI / 2 + (Math.PI * i) / N;
+    pt.push([a.x + r * Math.cos(t), a.y + r * Math.sin(t)]);
+  }
+  path.moveTo(pt[0]![0], pt[0]![1]);
+  for (let i = 1; i < pt.length; i++) path.lineTo(pt[i]![0], pt[i]![1]);
+  path.closePath();
+}
+
+/** Outline of a poly-line track (tessellated arc) of width `w`: offset each side. */
+function addPolylineOutline(path: Path2D, pts: Vec2[], r: number): void {
+  if (r <= 0 || pts.length < 2) return;
+  const left: [number, number][] = [];
+  const right: [number, number][] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i]!;
+    const a = pts[Math.max(0, i - 1)]!;
+    const b = pts[Math.min(pts.length - 1, i + 1)]!;
+    const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    const px = -Math.sin(ang) * r;
+    const py = Math.cos(ang) * r;
+    left.push([p.x + px, p.y + py]);
+    right.push([p.x - px, p.y - py]);
+  }
+  path.moveTo(left[0]![0], left[0]![1]);
+  for (let i = 1; i < left.length; i++) path.lineTo(left[i]![0], left[i]![1]);
+  for (let i = right.length - 1; i >= 0; i--) path.lineTo(right[i]![0], right[i]![1]);
+  path.closePath();
 }
 
 /** Pad outline as a Path2D subpath in board coordinates. */
@@ -551,17 +610,23 @@ export function buildScene(board: Board, filter: SceneFilter = {}): BoardScene {
   };
 
   for (const t of board.tracks) {
-    const p = pathIn(buckets(scene, t.layer).tracks, Math.max(t.width, 1));
+    const b = buckets(scene, t.layer);
+    const p = pathIn(b.tracks, Math.max(t.width, 1));
     p.moveTo(t.start.x, t.start.y);
     p.lineTo(t.end.x, t.end.y);
+    addStadiumOutline(b.trackOutlines, t.start, t.end, t.width / 2);
+    b.hasTrackOutlines = true;
     grow(t.start.x, t.start.y, t.width);
     grow(t.end.x, t.end.y, t.width);
   }
   for (const a of board.arcs) {
     const pts = tessellateArc(a.start, a.mid, a.end);
-    const p = pathIn(buckets(scene, a.layer).tracks, Math.max(a.width, 1));
+    const b = buckets(scene, a.layer);
+    const p = pathIn(b.tracks, Math.max(a.width, 1));
     p.moveTo(pts[0]!.x, pts[0]!.y);
     for (let i = 1; i < pts.length; i++) p.lineTo(pts[i]!.x, pts[i]!.y);
+    addPolylineOutline(b.trackOutlines, pts, a.width / 2);
+    b.hasTrackOutlines = true;
     grow(a.start.x, a.start.y, a.width);
     grow(a.end.x, a.end.y, a.width);
   }
@@ -1055,19 +1120,35 @@ export function buildDrawSteps(
     strokeAll(ctx, b.gfxStrokes, minPen);
     if (opts.tracks && b.tracks.size > 0) {
       ctx.globalAlpha = opts.trackOpacity;
-      strokeAll(ctx, b.tracks, minPen);
+      if (opts.trackFill) {
+        strokeAll(ctx, b.tracks, minPen);
+      } else if (b.hasTrackOutlines) {
+        // Sketch: outline each track at min-pen instead of filling it.
+        ctx.lineWidth = minPen;
+        ctx.stroke(b.trackOutlines);
+      }
       ctx.globalAlpha = 1;
     }
     if (opts.pads && b.hasPads) {
       ctx.globalAlpha = opts.padOpacity;
-      ctx.fillStyle = color;
-      ctx.fill(b.pads, 'nonzero');
+      if (opts.padFill) {
+        ctx.fillStyle = color;
+        ctx.fill(b.pads, 'nonzero');
+      } else {
+        ctx.lineWidth = minPen;
+        ctx.stroke(b.pads);
+      }
       ctx.globalAlpha = 1;
     }
     if (opts.vias && b.hasVias) {
       ctx.globalAlpha = opts.viaOpacity;
-      ctx.fillStyle = color;
-      ctx.fill(b.vias, 'nonzero');
+      if (opts.viaFill) {
+        ctx.fillStyle = color;
+        ctx.fill(b.vias, 'nonzero');
+      } else {
+        ctx.lineWidth = minPen;
+        ctx.stroke(b.vias);
+      }
       ctx.globalAlpha = 1;
     }
     // Pad clearance outlines: thin (min-pen) stroke in the copper color, the

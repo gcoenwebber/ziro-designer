@@ -299,6 +299,10 @@ export function PcbEditor({
       padOpacity: opacity.pads,
       zoneOpacity: opacity.zones,
       zoneOutline: toggles.has('zoneDisplayOutline'),
+      // Display-mode toggles: on = sketch (outline) = fill off (m_Display*Fill).
+      trackFill: !toggles.has('trackDisplayMode'),
+      viaFill: !toggles.has('viaDisplayMode'),
+      padFill: !toggles.has('padDisplayMode'),
     }),
     [objects, opacity, toggles],
   );
