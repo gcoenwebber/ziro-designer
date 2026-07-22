@@ -96,8 +96,10 @@ export const PCB_SPECIAL = {
   ratsnest: rgba(0, 248, 255, 0.35),
   anchor: rgba(255, 38, 226),
   drawingSheet: rgba(200, 114, 171),
-  // Pad number text, drawn over the pad copper (KiCad's LAYER_PADS names).
-  padName: rgba(255, 255, 255, 0.9),
+  // Pad number / net name text, drawn over the pad copper (LAYER_PAD_NETNAMES,
+  // white @ 0.9 in the default theme). Slightly softened so the thin strokes
+  // read as glassy over bright copper rather than a solid opaque label.
+  padName: rgba(255, 255, 255, 0.72),
 };
 
 /**

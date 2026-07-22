@@ -523,18 +523,33 @@ function addPadLabels(scene: BoardScene, pad: PcbPad, netName: string): void {
   if (padNumber === '' && !showNet) return;
 
   const round = pad.shape === 'circle' || pad.shape === 'oval';
-  let px = pad.size.x; // along the text baseline
-  let py = pad.size.y; // perpendicular (drives the font size)
-  let angle = pad.angle ?? 0;
-  let size = py;
-  // Portrait pad: rotate the text 90° and run it down the taller axis.
-  if (px < py * 0.95) {
-    angle += 90;
-    size = px;
-    [px, py] = [py, px];
+  // KiCad works off the pad's *screen-axis-aligned* bounding box (padBBox), not
+  // the footprint rotation, so pad text is always drawn horizontally (0°) — and
+  // only flipped to a screen-vertical 90° when that bbox is taller than wide.
+  const rad0 = ((pad.angle ?? 0) * Math.PI) / 180;
+  const cAbs = Math.abs(Math.cos(rad0));
+  const sAbs = Math.abs(Math.sin(rad0));
+  let bx = pad.size.x * cAbs + pad.size.y * sAbs; // bbox width  (screen X)
+  let by = pad.size.x * sAbs + pad.size.y * cAbs; // bbox height (screen Y)
+  // Don't let a ~45° rotation bloat the bbox: clamp both to 1.1× the short side.
+  if (pad.shape !== 'custom') {
+    const limit = Math.min(pad.size.x, pad.size.y) * 1.1;
+    if (bx > limit && by > limit) {
+      bx = limit;
+      by = limit;
+    }
+  }
+  let angle = 0;
+  let size = by;
+  // Portrait bbox: rotate the text a screen-vertical 90° and run it up the taller
+  // axis (KiCad: m_gal->Rotate(-90°); size = padsize.x; swap).
+  if (bx < by * 0.95) {
+    angle = 90;
+    size = bx;
+    [bx, by] = [by, bx];
   }
   if (size > MAX_PAD_FONT) size = MAX_PAD_FONT;
-  const along = px;
+  const along = bx; // padsize.x post-swap: the longer screen dimension
   const both = showNet && padNumber !== '';
   let yOffNet = 0;
   let yOffNum = 0;
@@ -563,16 +578,18 @@ function addPadLabels(scene: BoardScene, pad: PcbPad, netName: string): void {
   };
 
   if (showNet) {
+    // 1.5·along / max(chars+1, 5), capped at the perpendicular size, then ·0.85.
     let tsize = Math.min((1.5 * along) / Math.max(netName.length + 1, 5), size);
     tsize *= 0.85;
     if (round) tsize *= 0.9;
-    const ty = Math.min(tsize * 1.4, yOffNet);
+    const ty = both ? Math.min(tsize * 1.4, yOffNet) : 0;
     label(netName, anchor(ty), tsize);
   }
   if (padNumber !== '') {
     let tsize = Math.min((1.5 * along) / Math.max(padNumber.length, 3), size);
-    tsize = Math.min(tsize * 0.85, size);
-    label(padNumber, anchor(-yOffNum), tsize);
+    tsize *= 0.85;
+    tsize = Math.min(tsize, size);
+    label(padNumber, anchor(both ? -yOffNum : 0), tsize);
   }
 }
 
@@ -1314,7 +1331,10 @@ export function buildDrawSteps(
     steps.push(() => {
       ctx.globalAlpha = opts.padOpacity;
       ctx.strokeStyle = PCB_SPECIAL.padName;
-      strokeAll(ctx, scene.padText, minPen);
+      // Draw with the glyph's real (thin) pen — namesize.x/6 — not the 1px floor,
+      // so the labels read as thin/glassy over the copper, matching KiCad. A tiny
+      // floor keeps them from vanishing entirely at moderate zoom.
+      strokeAll(ctx, scene.padText, minPen * 0.35);
       ctx.globalAlpha = 1;
     });
   }

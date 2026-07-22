@@ -1257,6 +1257,26 @@ export function PcbEditor({
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.strokeStyle = PCB_CURSOR;
       ctx.lineWidth = Math.max(1, dpr);
+      // Local Ratsnest tool: KiCad's PCB_PICKER shows a BULLSEYE cursor (a ring
+      // with a small centre cross) instead of the default crosshair, so the user
+      // knows a per-item picker is armed.
+      if (activeToolRef.current === 'localRatsnestTool') {
+        const r = 11 * dpr;
+        const arm = 5 * dpr;
+        ctx.beginPath();
+        ctx.arc(px, py, r, 0, Math.PI * 2);
+        ctx.moveTo(px - r - arm, py);
+        ctx.lineTo(px - r + arm, py);
+        ctx.moveTo(px + r - arm, py);
+        ctx.lineTo(px + r + arm, py);
+        ctx.moveTo(px, py - r - arm);
+        ctx.lineTo(px, py - r + arm);
+        ctx.moveTo(px, py + r - arm);
+        ctx.lineTo(px, py + r + arm);
+        ctx.stroke();
+        setScale(v.scale);
+        return;
+      }
       ctx.beginPath();
       if (toggles.has('crosshairFull')) {
         ctx.moveTo(0, py);
@@ -2208,8 +2228,9 @@ export function PcbEditor({
             }
           }
         } else if (activeToolRef.current === 'localRatsnestTool') {
-          // PCB_ACTIONS::localRatsnestTool: clicking a footprint toggles its
-          // ratsnest on while the global ratsnest is hidden.
+          // BOARD_INSPECTION_TOOL::LocalRatsnestTool: each click toggles the
+          // ratsnest of the footprint (or pad's parent footprint) under the
+          // cursor; clicking off every item clears the whole local ratsnest.
           const w = worldAt(e.clientX, e.clientY);
           const brd = boardRef.current;
           if (w && brd) {
@@ -2223,6 +2244,10 @@ export function PcbEditor({
                 else next.add(fpHit.index);
                 return next;
               });
+            } else {
+              // Clicked empty space: clear the local ratsnest (KiCad resets all
+              // pads to the global setting when the pick lands on nothing).
+              setLocalRats((prev) => (prev.size ? new Set() : prev));
             }
           }
         } else if (DRAW_SHAPE_TOOLS[activeToolRef.current]) {
