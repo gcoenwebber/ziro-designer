@@ -29,10 +29,12 @@ import {
   duplicateBoardItems,
   serializeBoard,
   buildRatsnest,
+  addBoardShape,
   type RatsnestEdge,
   type Board,
   type BoardItemKind,
   type PcbFootprint,
+  type PcbShape,
 } from '@ziroeda/pcbnew';
 import { MenuBar, type Menu } from '../../ui/MenuBar.js';
 import { Toolbar } from '../../ui/Toolbar.js';
@@ -89,6 +91,70 @@ const EYE_ICONS = import.meta.glob('../assets/toolbar/visibility*.svg', {
 }) as Record<string, string>;
 const eyeUrl = (on: boolean): string | undefined =>
   EYE_ICONS[`../assets/toolbar/visibility${on ? '' : '_off'}.svg`];
+
+// The graphic-shape drawing tools (DRAWING_TOOL) and the PcbShape kind each
+// one creates.
+const DRAW_SHAPE_TOOLS: Record<string, PcbShape['kind']> = {
+  drawLine: 'line',
+  drawArc: 'arc',
+  drawRectangle: 'rect',
+  drawCircle: 'circle',
+  drawPolygon: 'poly',
+};
+
+// Default graphic line widths per layer class, in IU
+// (board_design_settings.h DEFAULT_*_WIDTH, in mm).
+const defaultShapeWidth = (layer: string): number => {
+  if (/\.SilkS$/.test(layer)) return 0.1 * MM;
+  if (/\.Cu$/.test(layer)) return 0.2 * MM;
+  if (layer === 'Edge.Cuts' || /\.CrtYd$/.test(layer)) return 0.05 * MM;
+  return 0.1 * MM;
+};
+
+// Circumcenter of three points, or null when they are (nearly) collinear.
+const circumcenter = (
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  c: { x: number; y: number },
+): { x: number; y: number } | null => {
+  const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
+  if (Math.abs(d) < 1e-3) return null;
+  const a2 = a.x * a.x + a.y * a.y;
+  const b2 = b.x * b.x + b.y * b.y;
+  const c2 = c.x * c.x + c.y * c.y;
+  return {
+    x: (a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d,
+    y: (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d,
+  };
+};
+
+// Trace the arc through start→mid→end on the 2D context (world coords).
+const traceArc3 = (
+  ctx: CanvasRenderingContext2D,
+  s: { x: number; y: number },
+  m: { x: number; y: number },
+  e: { x: number; y: number },
+): void => {
+  const o = circumcenter(s, m, e);
+  if (!o) {
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(e.x, e.y);
+    return;
+  }
+  const r = Math.hypot(s.x - o.x, s.y - o.y);
+  const a0 = Math.atan2(s.y - o.y, s.x - o.x);
+  const a1 = Math.atan2(m.y - o.y, m.x - o.x);
+  const a2 = Math.atan2(e.y - o.y, e.x - o.x);
+  // Pick the sweep direction that passes through the mid point.
+  const ccwSpan = (from: number, to: number): number => {
+    let d = from - to;
+    while (d < 0) d += Math.PI * 2;
+    return d;
+  };
+  const ccw = ccwSpan(a0, a1) <= ccwSpan(a0, a2);
+  ctx.moveTo(s.x, s.y);
+  ctx.arc(o.x, o.y, r, a0, a2, ccw);
+};
 
 // Left-toolbar radio groups (same convention as the schematic editor).
 const RADIO_GROUPS: string[][] = [
@@ -537,6 +603,12 @@ export function PcbEditor({
   useEffect(() => {
     if (activeTool !== 'localRatsnestTool') setLocalRats(new Set());
   }, [activeTool]);
+  // In-flight graphic shape (DRAWING_TOOL): the points clicked so far.
+  const drawingRef = useRef<{ x: number; y: number }[]>([]);
+  // Switching tools abandons the in-flight shape.
+  useEffect(() => {
+    drawingRef.current = [];
+  }, [activeTool]);
   const sceneRef = useRef<BoardScene | null>(null);
   const rafRef = useRef(0);
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
@@ -809,6 +881,70 @@ export function PcbEditor({
         ctx.setTransform(1, 0, 0, 1, 0, 0);
       }
     }
+    // In-flight drawing preview (DRAWING_TOOL's live outline): the committed
+    // points plus the snapped cursor, stroked in the active layer's color at
+    // the layer's default line width.
+    {
+      const kind = DRAW_SHAPE_TOOLS[activeToolRef.current];
+      const pts = drawingRef.current;
+      const cur0 = cursorRef.current;
+      if (kind && pts.length > 0 && cur0) {
+        const p = snapToGrid(cur0);
+        ctx.save();
+        ctx.setTransform(v.scale, 0, 0, v.scale, v.tx, v.ty);
+        ctx.strokeStyle = layerColor(activeLayer);
+        ctx.lineWidth = defaultShapeWidth(activeLayer);
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.globalAlpha = 0.9;
+        ctx.beginPath();
+        switch (kind) {
+          case 'line': {
+            const end = constrainLineEnd(pts[0]!, p);
+            ctx.moveTo(pts[0]!.x, pts[0]!.y);
+            ctx.lineTo(end.x, end.y);
+            break;
+          }
+          case 'rect': {
+            const a = pts[0]!;
+            ctx.rect(
+              Math.min(a.x, p.x),
+              Math.min(a.y, p.y),
+              Math.abs(p.x - a.x),
+              Math.abs(p.y - a.y),
+            );
+            break;
+          }
+          case 'circle': {
+            const a = pts[0]!;
+            const r = Math.hypot(p.x - a.x, p.y - a.y);
+            ctx.moveTo(a.x + r, a.y);
+            ctx.arc(a.x, a.y, r, 0, Math.PI * 2);
+            break;
+          }
+          case 'arc': {
+            if (pts.length === 1) {
+              ctx.moveTo(pts[0]!.x, pts[0]!.y);
+              ctx.lineTo(p.x, p.y);
+            } else {
+              traceArc3(ctx, pts[0]!, p, pts[1]!);
+            }
+            break;
+          }
+          case 'poly': {
+            ctx.moveTo(pts[0]!.x, pts[0]!.y);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]!.x, pts[i]!.y);
+            ctx.lineTo(p.x, p.y);
+            break;
+          }
+          default:
+            break;
+        }
+        ctx.stroke();
+        ctx.restore();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      }
+    }
     const brd = boardRef.current;
     // Rubber-band marquee: KiCad tints it blue for a left→right window
     // (contained) select, green for a right→left crossing select.
@@ -893,6 +1029,9 @@ export function PcbEditor({
     cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(draw);
   }, [draw]);
+  // Ref mirror so long-lived handlers (global keydown) never call a stale draw.
+  const requestDrawRef = useRef(requestDraw);
+  requestDrawRef.current = requestDraw;
 
   // Layer/object changes invalidate the raster.
   useEffect(() => {
@@ -1222,6 +1361,105 @@ export function PcbEditor({
     setDisambig({ x: clientX, y: clientY, ids: cands, additive });
   };
 
+  // ----- graphic shape drawing (DRAWING_TOOL) ---------------------------------
+
+  // Constrain a line segment's end per the left-toolbar line mode: 90 snaps to
+  // the nearer axis, 45 to the nearest 45° multiple, free leaves it alone.
+  const constrainLineEnd = (
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+  ): { x: number; y: number } => {
+    if (toggles.has('lineModeFree')) return to;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    if (toggles.has('lineMode90'))
+      return Math.abs(dx) >= Math.abs(dy) ? { x: to.x, y: from.y } : { x: from.x, y: to.y };
+    // 45°: project onto the nearest multiple of 45°.
+    const ang = (Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * Math.PI) / 4;
+    const len = Math.abs(Math.cos(ang)) > 0.5 ? dx / Math.cos(ang) : dy / Math.sin(ang);
+    return snapToGrid({ x: from.x + len * Math.cos(ang), y: from.y + len * Math.sin(ang) });
+  };
+
+  // One left click of an active drawing tool (DRAWING_TOOL::drawShape's click
+  // sequence). Returns having updated the in-flight point list or committed a
+  // finished shape to the board.
+  const handleDrawClick = (world: { x: number; y: number }): void => {
+    const kind = DRAW_SHAPE_TOOLS[activeToolRef.current];
+    const brd = boardRef.current;
+    if (!kind || !brd) return;
+    const pts = drawingRef.current;
+    const p = snapToGrid(world);
+    const same = (a: { x: number; y: number }, b: { x: number; y: number }): boolean =>
+      a.x === b.x && a.y === b.y;
+    // Commit leaves the new shape unselected and the tool active, like
+    // DRAWING_TOOL (draw the next shape right away).
+    const commit = (shape: Omit<PcbShape, 'source'>): void => {
+      commitBoard(addBoardShape(brd, shape).board);
+    };
+    const width = defaultShapeWidth(activeLayer);
+    const base = { width, fill: false, layer: activeLayer } as const;
+
+    switch (kind) {
+      case 'line': {
+        if (pts.length === 0) {
+          drawingRef.current = [p];
+        } else {
+          const start = pts[0]!;
+          const end = constrainLineEnd(start, p);
+          if (same(start, end)) {
+            // Clicking in place ends the chain.
+            drawingRef.current = [];
+          } else {
+            commit({ kind: 'line', start, end, ...base });
+            // Chain: the next segment starts where this one ended.
+            drawingRef.current = [end];
+          }
+        }
+        break;
+      }
+      case 'rect': {
+        if (pts.length === 0) drawingRef.current = [p];
+        else if (!same(pts[0]!, p)) {
+          commit({ kind: 'rect', start: pts[0]!, end: p, ...base });
+          drawingRef.current = [];
+        }
+        break;
+      }
+      case 'circle': {
+        if (pts.length === 0) drawingRef.current = [p];
+        else if (!same(pts[0]!, p)) {
+          commit({ kind: 'circle', center: pts[0]!, end: p, ...base });
+          drawingRef.current = [];
+        }
+        break;
+      }
+      case 'arc': {
+        // Clicks: start, end, then the curvature point (the arc's mid).
+        if (pts.length < 2) {
+          if (pts.length === 0 || !same(pts[pts.length - 1]!, p)) drawingRef.current = [...pts, p];
+        } else {
+          commit({ kind: 'arc', start: pts[0]!, mid: p, end: pts[1]!, ...base });
+          drawingRef.current = [];
+        }
+        break;
+      }
+      case 'poly': {
+        const tol = tolOf();
+        const closeToFirst = pts.length >= 3 && Math.hypot(p.x - pts[0]!.x, p.y - pts[0]!.y) <= tol;
+        if (closeToFirst || (pts.length >= 3 && same(pts[pts.length - 1]!, p))) {
+          commit({ kind: 'poly', pts: [...pts], ...base });
+          drawingRef.current = [];
+        } else if (pts.length === 0 || !same(pts[pts.length - 1]!, p)) {
+          drawingRef.current = [...pts, p];
+        }
+        break;
+      }
+      default:
+        break;
+    }
+    requestDraw();
+  };
+
   // ----- interactive move / drag (EDIT_TOOL Move vs Drag) ---------------------
 
   const sceneFilter = (): { hideFrontFootprints: boolean; hideBackFootprints: boolean } => ({
@@ -1391,8 +1629,14 @@ export function PcbEditor({
     const d = downRef.current;
     if (d) {
       if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 3 * dpr) d.moved = true;
-      // The delete tool acts on clicks only — no drag-move or box select.
-      if (activeToolRef.current === 'deleteTool') return;
+      // Click-driven tools (delete, local ratsnest, drawing) take no
+      // drag-move or box-select gestures.
+      if (
+        activeToolRef.current === 'deleteTool' ||
+        activeToolRef.current === 'localRatsnestTool' ||
+        DRAW_SHAPE_TOOLS[activeToolRef.current]
+      )
+        return;
       if (d.moved && d.world) {
         const cur = worldAt(e.clientX, e.clientY);
         if (!cur) return;
@@ -1459,6 +1703,9 @@ export function PcbEditor({
               });
             }
           }
+        } else if (DRAW_SHAPE_TOOLS[activeToolRef.current]) {
+          const w = worldAt(e.clientX, e.clientY);
+          if (w) handleDrawClick(w);
         } else {
           clickSelect(e.clientX, e.clientY, d.shift);
         }
@@ -1552,6 +1799,10 @@ export function PcbEditor({
         if (disambigRef.current) {
           hoverRef.current = null;
           setDisambig(null);
+        } else if (drawingRef.current.length > 0) {
+          // First Esc abandons the in-flight shape; the tool stays active.
+          drawingRef.current = [];
+          requestDrawRef.current();
         } else if (activeToolRef.current !== 'selectSetRect') {
           // Esc in a tool returns to the selection tool (TOOL_MANAGER).
           setActiveTool('selectSetRect');

@@ -51,6 +51,7 @@ export {
   setFootprintOrientation,
   subsetBoardItems,
   deleteBoardItems,
+  addBoardShape,
   rotateBoardItems,
   duplicateBoardItems,
   boardSelectionBBox,
