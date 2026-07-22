@@ -154,7 +154,6 @@ export const PCB_RIGHT_TOOLBAR: ToolEntry[] = [
     id: 'localRatsnestTool',
     icon: 'localRatsnestTool',
     title: 'Local Ratsnest\nToggle ratsnest display of selected item(s)',
-    ...todo,
   },
   sep,
   { id: 'placeFootprint', icon: 'placeFootprint', title: 'Place Footprints (A)', ...todo },
