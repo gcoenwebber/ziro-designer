@@ -12,6 +12,7 @@ export * from './electrical_spacing_values.js';
 export * from './iec60664.js';
 export * from './fusing_current.js';
 export * from './cable_size.js';
+export * from './common_data.js';
 export * from './wavelength.js';
 export * from './board_classes_values.js';
 export * from './galvanic_corrosion.js';
