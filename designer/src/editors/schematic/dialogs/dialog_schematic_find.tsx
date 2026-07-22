@@ -140,14 +140,9 @@ export function DialogSchematicFind({
             />
             Whole words only
           </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={data.matchMode === 'wildcard'}
-              onChange={(e) => setMode('wildcard', e.target.checked)}
-            />
-            Wildcards
-          </label>
+          {/* KiCad's find dialog offers only Match case / Whole words only /
+              Regular Expression (dialog_sch_find_base.cpp); WILDCARD mode
+              exists in EDA_SEARCH_MATCH_MODE but has no checkbox here. */}
           <label>
             <input
               type="checkbox"
