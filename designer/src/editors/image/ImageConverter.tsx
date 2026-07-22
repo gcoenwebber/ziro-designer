@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { MenuBar, type Menu } from '../../ui/MenuBar.js';
-import { pngDpi } from '../drawingsheet/wksBitmap.js';
+import { imageMeta } from './imageMeta.js';
 import {
   convert,
   grayToMono,
@@ -50,11 +50,15 @@ const FORMATS: { id: OutputFormat; label: string }[] = [
 const DEFAULT_DPI = 300; // KiCad's DEFAULT_DPI when the image carries no resolution
 
 interface Loaded {
+  /** File name without extension — used as the download file stem. */
   name: string;
+  /** Full file name, shown in the title bar (KiCad's UpdateTitle). */
+  fullName: string;
   w: number;
   h: number;
   bpp: number;
-  originalDPI: number;
+  originalDPIX: number;
+  originalDPIY: number;
   original: ImageData;
   gray: GrayImage;
 }
@@ -66,8 +70,8 @@ export function ImageConverter({ onExitToHome }: { onExitToHome: () => void }): 
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [tab, setTab] = useState<Tab>('bw');
   const [unit, setUnit] = useState<SizeUnit>('mm');
-  const [outX, setOutX] = useState('0');
-  const [outY, setOutY] = useState('0');
+  const [outX, setOutX] = useState(formatOutputSize(0, 'mm'));
+  const [outY, setOutY] = useState(formatOutputSize(0, 'mm'));
   const [lock, setLock] = useState(true);
   const [threshold, setThreshold] = useState(50); // slider 0..100, KiCad default 50
   const [negative, setNegative] = useState(false);
@@ -114,21 +118,24 @@ export function ImageConverter({ onExitToHome }: { onExitToHome: () => void }): 
         bmp.close();
         const original = cx.getImageData(0, 0, w, h);
         const gray = imageToGray(original.data, w, h);
-        const dpi = /\.png$/i.test(file.name) ? pngDpi(bytes) : DEFAULT_DPI;
+        const meta = imageMeta(bytes);
         setLoaded({
           name: file.name.replace(/\.[^.]+$/, '') || 'LOGO',
+          fullName: file.name,
           w,
           h,
-          bpp: 24,
-          originalDPI: dpi,
+          bpp: meta.bpp,
+          originalDPIX: meta.dpiX,
+          originalDPIY: meta.dpiY,
           original,
           gray,
         });
         // Seed the output size from the image at its native PPI (current unit).
-        setOutX(formatOutputSize(initialOutputSize(w, dpi, unit), unit));
-        setOutY(formatOutputSize(initialOutputSize(h, dpi, unit), unit));
+        setOutX(formatOutputSize(initialOutputSize(w, meta.dpiX, unit), unit));
+        setOutY(formatOutputSize(initialOutputSize(h, meta.dpiY, unit), unit));
         setTab('bw');
-        setStatus(`Loaded ${file.name} — ${w} × ${h} px @ ${dpi} PPI`);
+        // KiCad shows the opened file in the status bar (OnLoadFile).
+        setStatus(file.name);
       } catch (e) {
         setStatus(`Could not load image: ${(e as Error).message}`);
       }
@@ -144,7 +151,11 @@ export function ImageConverter({ onExitToHome }: { onExitToHome: () => void }): 
   const onDrop = (e: React.DragEvent): void => {
     e.preventDefault();
     const f = e.dataTransfer.files?.[0];
-    if (f && /^image\//.test(f.type || '')) void loadFile(f);
+    if (!f || !/^image\//.test(f.type || '')) return;
+    // DROP_FILE::OnDropFiles asks before replacing an already-loaded image.
+    if (loaded && !window.confirm('There is already a file loaded. Do you want to replace it?'))
+      return;
+    void loadFile(f);
   };
 
   // ---- Output Size box (KiCad's IMAGE_SIZE behaviour) ----
@@ -170,23 +181,38 @@ export function ImageConverter({ onExitToHome }: { onExitToHome: () => void }): 
     setOutY(text);
     if (!lock) return;
     const v = Number(text) || 0;
-    const x = unit === 'dpi' ? (numY ? (numX * v) / numY : v) : v * aspect;
+    // DPI mode reproduces OnSizeChangeY verbatim: the ratio is computed against
+    // the X size, so the locked X ends up set to the newly typed value.
+    const x = unit === 'dpi' ? v : v * aspect;
     setOutX(formatOutputSize(x, unit));
+  };
+  const toggleLock = (on: boolean): void => {
+    setLock(on);
+    // ToggleAspectRatioLock: re-locking snaps Y back into ratio with X (in DPI
+    // mode OnSizeChangeX's ratio against X is 1, so Y stays as it is).
+    if (on && unit !== 'dpi') setOutY(formatOutputSize(numX / aspect, unit));
   };
 
   const dpiX = loaded ? outputDpi(numX, loaded.w, unit) : DEFAULT_DPI;
   const dpiY = loaded ? outputDpi(numY, loaded.h, unit) : DEFAULT_DPI;
 
-  const buildOutput = useCallback(() => {
-    if (!loaded || !mono) return null;
-    return convert(mono, {
-      format,
-      layer: OUTLINE_LAYERS[layerIdx]!.id,
-      dpiX: dpiX > 0 ? dpiX : DEFAULT_DPI,
-      dpiY: dpiY > 0 ? dpiY : DEFAULT_DPI,
-      name: loaded.name || 'LOGO',
-    });
-  }, [loaded, mono, format, layerIdx, dpiX, dpiY]);
+  const buildOutput = useCallback(
+    (paste = false) => {
+      if (!loaded || !mono) return null;
+      // KiCad names the emitted symbol/footprint "LOGO" (BITMAPCONV_INFO's
+      // m_CmpName is fixed); only the download file takes the image's name.
+      return convert(mono, {
+        format,
+        layer: OUTLINE_LAYERS[layerIdx]!.id,
+        dpiX: dpiX > 0 ? dpiX : DEFAULT_DPI,
+        dpiY: dpiY > 0 ? dpiY : DEFAULT_DPI,
+        name: 'LOGO',
+        fileStem: loaded.name || 'LOGO',
+        paste,
+      });
+    },
+    [loaded, mono, format, layerIdx, dpiX, dpiY],
+  );
 
   const exportToFile = (): void => {
     const out = buildOutput();
@@ -203,7 +229,9 @@ export function ImageConverter({ onExitToHome }: { onExitToHome: () => void }): 
     setStatus(`Exported ${out.filename}`);
   };
   const exportToClipboard = async (): Promise<void> => {
-    const out = buildOutput();
+    // OnExportToClipboard: a symbol copies as SYMBOL_PASTE_FMT — the bare
+    // symbol fragment, ready to paste into an open schematic.
+    const out = buildOutput(format === 'symbol');
     if (!out) {
       setStatus('Load a source image before exporting.');
       return;
@@ -237,7 +265,10 @@ export function ImageConverter({ onExitToHome }: { onExitToHome: () => void }): 
 
   return (
     <div className="imgc-frame ze-app">
-      <MenuBar menus={menus} title="Image Converter" />
+      <MenuBar
+        menus={menus}
+        title={loaded ? `${loaded.fullName} — Image Converter` : 'Image Converter'}
+      />
       <input
         ref={fileInputRef}
         type="file"
@@ -280,19 +311,20 @@ export function ImageConverter({ onExitToHome }: { onExitToHome: () => void }): 
         <div className="imgc-side">
           <fieldset className="imgc-group">
             <legend>Image Information</legend>
+            {/* KiCad's labels read "0000" until the first image is loaded. */}
             <div className="imgc-info">
               <span className="k">Image size:</span>
-              <span className="v">{loaded ? loaded.w : 0}</span>
-              <span className="v">{loaded ? loaded.h : 0}</span>
+              <span className="v">{loaded ? loaded.w : '0000'}</span>
+              <span className="v">{loaded ? loaded.h : '0000'}</span>
               <span className="u">pixels</span>
 
               <span className="k">Image PPI:</span>
-              <span className="v">{loaded ? loaded.originalDPI : 0}</span>
-              <span className="v">{loaded ? loaded.originalDPI : 0}</span>
+              <span className="v">{loaded ? loaded.originalDPIX : '0000'}</span>
+              <span className="v">{loaded ? loaded.originalDPIY : '0000'}</span>
               <span className="u">PPI</span>
 
               <span className="k">BPP:</span>
-              <span className="v">{loaded ? loaded.bpp : 0}</span>
+              <span className="v">{loaded ? loaded.bpp : '0000'}</span>
               <span className="v" />
               <span className="u">bits</span>
             </div>
@@ -338,7 +370,11 @@ export function ImageConverter({ onExitToHome }: { onExitToHome: () => void }): 
               </select>
             </div>
             <label className="imgc-check">
-              <input type="checkbox" checked={lock} onChange={(e) => setLock(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={lock}
+                onChange={(e) => toggleLock(e.target.checked)}
+              />
               Lock height / width ratio
             </label>
           </fieldset>
@@ -353,6 +389,7 @@ export function ImageConverter({ onExitToHome }: { onExitToHome: () => void }): 
                 max={100}
                 value={threshold}
                 disabled={!loaded}
+                title="Adjust the level to convert the greyscale picture to a black and white picture."
                 onChange={(e) => setThreshold(Number(e.target.value))}
               />
               <span className="imgc-slider-val">{threshold}</span>
