@@ -9,6 +9,10 @@
 
 import { useState, type JSX } from 'react';
 import {
+  CONDUCTOR_RESISTIVITIES,
+  LOSS_TANGENTS,
+  type MaterialPreset,
+  RELATIVE_DIELECTRIC_CONSTANTS,
   coaxAnalyze,
   coaxSynthesize,
   coplanarAnalyze,
@@ -121,10 +125,54 @@ const PHYS_FIELDS: Record<LineType, PhysField[]> = {
 const SUBSTRATE_DEFAULTS = {
   er: '4.5',
   tand: '0.02',
-  sigma: '5.8e7',
+  // KiCad's panel takes the conductor's specific resistance ρ in Ω·m.
+  rho: '1.72e-8',
   mur: '1',
   erEnv: '1',
 };
+
+/** Text field with a KiCad-style "…" preset picker that fills the value. */
+function PresetField({
+  label,
+  value,
+  onChange,
+  unit,
+  presets,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  unit: string;
+  presets: readonly MaterialPreset[];
+}): JSX.Element {
+  return (
+    <div className="calc-field">
+      <span className="calc-field-label">{label}</span>
+      <input
+        className="calc-input"
+        value={value}
+        spellCheck={false}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <select
+        className="calc-select calc-unit-select"
+        value=""
+        title="Standard materials"
+        onChange={(e) => {
+          if (e.target.value !== '') onChange(e.target.value);
+        }}
+      >
+        <option value="">…</option>
+        {presets.map((p) => (
+          <option key={`${p.name}`} value={String(p.value)}>
+            {p.value} — {p.name}
+          </option>
+        ))}
+      </select>
+      <span className="calc-unit">{unit}</span>
+    </div>
+  );
+}
 
 export function PanelTransline(): JSX.Element {
   const [type, setType] = useState<LineType>('microstrip');
@@ -152,7 +200,7 @@ export function PanelTransline(): JSX.Element {
     frequencyHz: freqHz,
     epsilonR: parseNum(sub.er),
     tanD: parseNum(sub.tand),
-    sigma: parseNum(sub.sigma),
+    sigma: 1 / parseNum(sub.rho),
     mur: 1, // dielectric relative permeability (non-magnetic substrate)
     murC: parseNum(sub.mur),
   });
@@ -346,23 +394,26 @@ export function PanelTransline(): JSX.Element {
 
       <div className="calc-row">
         <Group title="Substrate parameters">
-          <Field
+          <PresetField
             label="Relative permittivity (εr):"
             value={sub.er}
             onChange={(val) => setSub({ ...sub, er: val })}
             unit=""
+            presets={RELATIVE_DIELECTRIC_CONSTANTS}
           />
-          <Field
+          <PresetField
             label="Loss tangent (tanδ):"
             value={sub.tand}
             onChange={(val) => setSub({ ...sub, tand: val })}
             unit=""
+            presets={LOSS_TANGENTS}
           />
-          <Field
-            label="Conductivity (σ):"
-            value={sub.sigma}
-            onChange={(val) => setSub({ ...sub, sigma: val })}
-            unit="S/m"
+          <PresetField
+            label="Specific resistance (ρ):"
+            value={sub.rho}
+            onChange={(val) => setSub({ ...sub, rho: val })}
+            unit="Ω·m"
+            presets={CONDUCTOR_RESISTIVITIES}
           />
           <Field
             label="Conductor permeability (µ):"
