@@ -977,12 +977,16 @@ function imageFor(im: { data: string; uuid?: string }): ImageEntry | null {
   return entry.ready ? entry : null;
 }
 
-// KiCad's TARGET_PIN_RADIUS is 15 mil, but that reads visually large here; use a
-// smaller target that matches the desktop app's on-screen appearance.
-const TARGET_PIN_RADIUS = 0.3 * MM; // ~11.8 mil radius
+// TARGET_PIN_RADIUS (sch_pin.h): dangling-pin circle radius and the N.C. pin
+// cross arm length, 15 mil.
+const TARGET_PIN_RADIUS = 0.381 * MM;
 
 // KiCad DEFAULT_NOCONNECT_SIZE: 48 mil.
 const NOCONNECT_SIZE = 1.2192 * MM;
+
+// SCH_RENDER_SETTINGS::m_PinSymbolSize (25 mil): the fixed size of pin
+// decorations — negation bubble radius, clock notch, polarity slopes.
+const PIN_SYMBOL_SIZE = 0.635 * MM;
 
 // KiCad's ERC marker: MarkerShapeCorners (marker_base.cpp) scaled by 0.15 mm
 // (sch_marker.cpp SCALING_FACTOR) — the little bent arrow anchored at the fault.
@@ -1027,15 +1031,19 @@ export function drawErcMarkers(
   }
 }
 
-/** KiCad COLOR4D::Brightened(f): move the colour a fraction f toward white. */
-function brighten(hex: string, f: number): string {
-  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
-  if (!m) return hex;
+/** KiCad COLOR4D::Brightened(f): move the colour a fraction f toward white.
+ *  Accepts both `#rrggbb` and the theme's `rgb(r, g, b)` forms. */
+function brighten(color: string, f: number): string {
   const mix = (c: number) => Math.round(c + (255 - c) * f);
-  const r = mix(parseInt(m[1]!, 16)),
-    g = mix(parseInt(m[2]!, 16)),
-    b = mix(parseInt(m[3]!, 16));
-  return `rgb(${r}, ${g}, ${b})`;
+  const hex = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color);
+  if (hex) {
+    return `rgb(${mix(parseInt(hex[1]!, 16))}, ${mix(parseInt(hex[2]!, 16))}, ${mix(parseInt(hex[3]!, 16))})`;
+  }
+  const rgb = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(color);
+  if (rgb) {
+    return `rgb(${mix(Number(rgb[1]))}, ${mix(Number(rgb[2]))}, ${mix(Number(rgb[3]))})`;
+  }
+  return color;
 }
 
 // ----- labels (SCH_LABEL / GLOBALLABEL / HIERLABEL / TEXT) -------------------
@@ -1576,11 +1584,12 @@ function drawLibUnit(
     // text in the body instead).
     const NUM = pin.numberSize ?? DEFAULT_TEXT;
     const NAME = pin.nameSize ?? DEFAULT_TEXT;
-    // externalPinDecoSize (negation circle / slopes / nonlogic) = number size / 2;
-    // internalPinDecoSize (clock notch) = name size / 2, falling back to number.
-    const radius = (NUM > 0 ? NUM : DEFAULT_TEXT) / 2;
+    // externalPinDecoSize / internalPinDecoSize: the fixed m_PinSymbolSize
+    // (25 mil, SCH_RENDER_SETTINGS) whenever it is set — per-pin text sizes
+    // are only the m_PinSymbolSize == 0 fallback, which never applies here.
+    const radius = PIN_SYMBOL_SIZE;
     const diam = radius * 2;
-    const clockSize = (NAME > 0 ? NAME : NUM > 0 ? NUM : DEFAULT_TEXT) / 2;
+    const clockSize = PIN_SYMBOL_SIZE;
 
     const endLocal = pinBodyEnd(pin.at, pin.angle, pin.length);
     const pos = localToWorld(origin, t, pin.at); // connection point (tip)
@@ -1611,8 +1620,9 @@ function drawLibUnit(
     /** The pin line plus its GRAPHIC_PINSHAPE decoration (sch_painter.cpp). */
     const strokePinBody = (): void => {
       if (pin.electricalType === 'no_connect') {
-        // N.C. pins draw the line plus an X at the connection point.
-        const R = 0.508 * MM * 0.25; // TARGET_PIN_RADIUS (15 mils)
+        // N.C. pins draw the line plus an X at the connection point, with
+        // arms of TARGET_PIN_RADIUS (15 mil, sch_pin.h).
+        const R = TARGET_PIN_RADIUS;
         line(p0.x, p0.y, pos.x, pos.y);
         line(pos.x - R, pos.y - R, pos.x + R, pos.y + R);
         line(pos.x + R, pos.y - R, pos.x - R, pos.y + R);
@@ -1887,8 +1897,10 @@ function drawText(
   if (a !== 0) ctx.rotate(-a); // matches placeAt's screen-space rotation
   ctx.translate(offX, offY);
   ctx.strokeStyle = color;
-  // KiCad text pen: default ~size/8 clamped; bold = size/5 (GetPenSizeForBold).
-  ctx.lineWidth = bold ? heightIU / 5 : Math.max(heightIU * 0.11, g_defaultPen * 0.6);
+  // KiCad text pen: normal text uses the constant default pen (6 mil —
+  // EDA_TEXT::GetEffectiveTextPenWidth), capped by ClampTextPenSize at
+  // 0.25 × size for tiny text; bold = size/5 (GetPenSizeForBold).
+  ctx.lineWidth = bold ? heightIU / 5 : Math.min(g_defaultPen, heightIU * 0.25);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   // Vector-text mode strokes segments directly (capturable by the SVG adapter);
