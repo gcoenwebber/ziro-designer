@@ -2645,3 +2645,53 @@ body {
   background: var(--chrome-border, rgba(128, 128, 128, 0.35));
   margin: 0 3px;
 }
+
+/* ---- Properties panel grid (SCH_PROPERTIES_PANEL) ---- */
+.ze-propgrid {
+  font-size: 12px;
+}
+.ze-propgrid-group {
+  font-weight: 600;
+  padding: 6px 2px 2px;
+  color: #c8cacd;
+  border-bottom: 1px solid #3a3c40;
+  margin-bottom: 2px;
+}
+.ze-propgrid-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 2px;
+}
+.ze-propgrid-name {
+  flex: 1 1 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #c8cacd;
+}
+.ze-propgrid-value {
+  flex: 1 1 55%;
+  min-width: 0;
+}
+.ze-propgrid-value input[type='text'],
+.ze-propgrid-value select {
+  width: 100%;
+  box-sizing: border-box;
+  background: #2a2c30;
+  border: 1px solid #3a3c40;
+  color: #e6e7e9;
+  border-radius: 2px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+.ze-propgrid-value input[type='checkbox'] {
+  accent-color: #e07b1a;
+}
+.ze-propgrid-value .ze-muted {
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}

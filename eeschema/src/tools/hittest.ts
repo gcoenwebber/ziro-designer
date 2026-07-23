@@ -218,3 +218,29 @@ export function hitTest(
 export function symbolId(s: SchSymbol, index: number): string {
   return refId('symbol', s.uuid, index);
 }
+
+/** Resolve a selection id back to its typed ItemRef (linear scan). */
+export function itemRefById(sch: Schematic, id: string): ItemRef | null {
+  const scan = <T>(
+    kind: ItemRef['kind'],
+    arr: readonly T[],
+    uuid: (t: T) => string | undefined,
+  ): ItemRef | null => {
+    for (let i = 0; i < arr.length; i++)
+      if (refId(kind, uuid(arr[i]!), i) === id) return { kind, id };
+    return null;
+  };
+  return (
+    scan('symbol', sch.symbols, (t) => t.uuid) ??
+    scan('line', sch.lines, (t) => t.uuid) ??
+    scan('junction', sch.junctions, (t) => t.uuid) ??
+    scan('noconnect', sch.noConnects, (t) => t.uuid) ??
+    scan('label', sch.labels, (t) => t.uuid) ??
+    scan('sheet', sch.sheets, (t) => t.uuid) ??
+    scan('busentry', sch.busEntries, (t) => t.uuid) ??
+    scan('image', sch.images, (t) => t.uuid) ??
+    scan('graphic', sch.graphics, () => undefined) ??
+    scan('textbox', sch.textBoxes, (t) => t.uuid) ??
+    scan('table', sch.tables, (t) => t.uuid)
+  );
+}

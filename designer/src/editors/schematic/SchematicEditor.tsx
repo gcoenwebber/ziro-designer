@@ -85,6 +85,10 @@ import {
   type ErcViolation,
   type SheetTreeNode,
   type ItemRef,
+  describeItem,
+  itemRefById,
+  schPropertiesFor,
+  type PropRow,
 } from '@ziroeda/eeschema';
 import {
   SchematicCanvas,
@@ -140,6 +144,7 @@ import {
 } from '../../prefs/useSettings.js';
 import type { RenderOpts } from './render/renderer.js';
 import type { InputPrefs } from './components/SchematicCanvas.js';
+import { SchPropertiesPanel } from './components/SchPropertiesPanel.js';
 import '../../ui/shell.css';
 
 // What KiCad writes for File > New Schematic: an empty sheet on A4 paper.
@@ -169,6 +174,40 @@ const SETTINGS_TOGGLES = new Set([
   'annotateAuto',
 ]);
 const PX_PER_MM_100 = 3.7795;
+
+// The "Current Tool" status-bar field (EDA_DRAW_FRAME::DisplayToolMsg):
+// TOOLS_HOLDER::PushTool shows the active action's FriendlyName; the idle
+// selection tool reads "Select item(s)". Names from sch_actions.cpp /
+// actions.cpp FriendlyName().
+const SCH_TOOL_MSGS: Record<string, string> = {
+  select: 'Select item(s)',
+  selectLasso: 'Select item(s)',
+  highlightNet: 'Highlight Nets',
+  placeSymbol: 'Place Symbols',
+  placePower: 'Place Power Symbols',
+  drawWire: 'Draw Wires',
+  drawBus: 'Draw Buses',
+  busEntry: 'Place Wire to Bus Entries',
+  noConnect: 'Place/Remove No Connect Flags',
+  junction: 'Place Junctions',
+  placeLabel: 'Place Net Labels',
+  placeClassLabel: 'Place Directive Labels',
+  placeGlobalLabel: 'Place Global Labels',
+  placeHierLabel: 'Place Hierarchical Labels',
+  drawSheet: 'Draw Hierarchical Sheets',
+  sheetPin: 'Place Pins from Sheet',
+  placeText: 'Draw Text',
+  textBox: 'Draw Text Boxes',
+  table: 'Draw Tables',
+  rectangle: 'Draw Rectangles',
+  circle: 'Draw Circles',
+  arc: 'Draw Arcs',
+  bezier: 'Draw Bezier Curve',
+  lines: 'Draw Lines',
+  image: 'Place Images',
+  delete: 'Interactive Delete Tool',
+  zoomTool: 'Zoom to Selection Area',
+};
 
 // Right-toolbar tool ids that place a text label, mapped to the label kind.
 const LABEL_TOOL_KINDS: Record<string, LabelKind> = {
@@ -335,6 +374,14 @@ export function SchematicEditor({
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hit: ItemRef | null } | null>(
     null,
   );
+  // Clarify Selection (SCH_SELECTION_TOOL::doSelectionMenu): an ambiguous
+  // click lists every candidate; picking a row selects it.
+  const [clarify, setClarify] = useState<{
+    x: number;
+    y: number;
+    items: ItemRef[];
+    additive: boolean;
+  } | null>(null);
   // Editing an existing label's text/shape (DIALOG_LABEL_PROPERTIES).
   const [labelEdit, setLabelEdit] = useState<{
     index: number;
@@ -395,10 +442,23 @@ export function SchematicEditor({
     if (es.annotation.automatic) t.add('annotateAuto');
     return t;
   }, [localToggles, es]);
+  // Ctrl+U (ACTIONS::toggleUnits) returns to the last imperial unit, like
+  // COMMON_TOOLS::m_imperialUnit (initially inches).
+  const lastImperialRef = useRef<'unitsInches' | 'unitsMils'>('unitsInches');
+  useEffect(() => {
+    if (toggles.has('unitsInches')) lastImperialRef.current = 'unitsInches';
+    else if (toggles.has('unitsMils')) lastImperialRef.current = 'unitsMils';
+  }, [toggles]);
   // Selection Filter (SCH_SELECTION_FILTER_OPTIONS): gates which item types —
   // and locked items — the selection accepts.
   const [selFilter, setSelFilter] = useState<SelectionFilterOptions>(defaultSelectionFilter);
   const [cursor, setCursor] = useState<Vec2 | null>(null);
+  // Status-bar relative coordinates: dx/dy/dist measure from this origin,
+  // which Space resets to the cursor (ACTIONS::resetLocalCoords;
+  // COMMON_TOOLS::ResetLocalCoords sets SCH_SCREEN::m_LocalOrigin).
+  const [localOrigin, setLocalOrigin] = useState<Vec2>({ x: 0, y: 0 });
+  const cursorRef = useRef<Vec2 | null>(null);
+  cursorRef.current = cursor;
   const [scale, setScale] = useState(1);
   // The symbol whose properties dialog is open (its refId), or null.
   const [propsTarget, setPropsTarget] = useState<string | null>(null);
@@ -519,9 +579,12 @@ export function SchematicEditor({
 
   // Every edit runs through KiCad's post-commit cleanup (colinear wire merge),
   // as part of the same undoable step (SCHEMATIC::CleanUp / RecalculateConnections).
-  const runCommand = useCallback((cmd: EditCommand) => {
-    setDoc((d) => (d ? history.current.execute(d, withCleanup(cmd)) : d));
-  }, []);
+  const runCommand = useCallback(
+    (cmd: EditCommand) => {
+      setDoc((d) => (d ? history.current.execute(d, withCleanup(cmd, libById)) : d));
+    },
+    [libById],
+  );
 
   const undo = useCallback(() => setDoc((d) => (d ? (history.current.undo(d) ?? d) : d)), []);
   const redo = useCallback(() => setDoc((d) => (d ? (history.current.redo(d) ?? d) : d)), []);
@@ -716,7 +779,7 @@ export function SchematicEditor({
         if (!histories.current.has(parentFile)) histories.current.set(parentFile, new History());
         project.current.docs.set(
           parentFile,
-          histories.current.get(parentFile)!.execute(parentDoc, withCleanup(cmd)),
+          histories.current.get(parentFile)!.execute(parentDoc, withCleanup(cmd, libById)),
         );
         onProjectChange?.([
           { name: parentFile, text: serializeSchematic(project.current.docs.get(parentFile)!) },
@@ -724,7 +787,7 @@ export function SchematicEditor({
         forcePageRefresh((n) => n + 1);
       }
     },
-    [currentPath, currentFile, doc, flatSheets, liveDocs, runCommand, onProjectChange],
+    [currentPath, currentFile, doc, flatSheets, liveDocs, runCommand, onProjectChange, libById],
   );
 
   // Find / Find and Replace (SCH_FIND_REPLACE_TOOL): modeless dialog state
@@ -855,7 +918,7 @@ export function SchematicEditor({
           if (!histories.current.has(file)) histories.current.set(file, new History());
           const updated = histories.current
             .get(file)!
-            .execute(target, withCleanup(setPageSettingsCommand(merged)));
+            .execute(target, withCleanup(setPageSettingsCommand(merged), libById));
           project.current.docs.set(file, updated);
           try {
             changedFiles.push({ name: file, text: serializeSchematic(updated) });
@@ -867,7 +930,7 @@ export function SchematicEditor({
       }
       setPageSettingsOpen(false);
     },
-    [runCommand, currentFile, onProjectChange, onPersistFiles],
+    [runCommand, currentFile, onProjectChange, onPersistFiles, libById],
   );
 
   // A base file name for a printed/plotted output (KiCad names plots after the
@@ -906,7 +969,7 @@ export function SchematicEditor({
         const target = project.current.docs.get(file);
         if (!target) continue;
         if (!histories.current.has(file)) histories.current.set(file, new History());
-        const next = histories.current.get(file)!.execute(target, withCleanup(cmd));
+        const next = histories.current.get(file)!.execute(target, withCleanup(cmd, libById));
         project.current.docs.set(file, next);
         try {
           changedFiles.push({ name: file, text: serializeSchematic(next) });
@@ -917,7 +980,7 @@ export function SchematicEditor({
       if (changedFiles.length) onProjectChange?.(changedFiles);
       setFieldsTableOpen(false);
     },
-    [currentFile, runCommand, onProjectChange],
+    [currentFile, runCommand, onProjectChange, libById],
   );
 
   // Plot (DIALOG_PLOT_SCHEMATIC): write the chosen file format for download.
@@ -1240,7 +1303,9 @@ export function SchematicEditor({
         if (!histories.current.has(file)) histories.current.set(file, new History());
         project.current.docs.set(
           file,
-          histories.current.get(file)!.execute(target, withCleanup(replaceCommand(searchData))),
+          histories.current
+            .get(file)!
+            .execute(target, withCleanup(replaceCommand(searchData), libById)),
         );
       }
     }
@@ -1248,7 +1313,7 @@ export function SchematicEditor({
     findCursor.current = -1;
     lastMatch.current = null;
     setFindStatus('');
-  }, [searchData, runCommand, currentFile]);
+  }, [searchData, runCommand, currentFile, libById]);
 
   // KiCad's Properties action: symbols have a full properties dialog; a text box
   // reopens its text editor (double-click = edit).
@@ -1410,20 +1475,23 @@ export function SchematicEditor({
   };
 
   useEffect(() => {
+    // Editors stay mounted behind display:none — only the visible frame may
+    // own the document clipboard events (see App's activeView stamp).
+    const hidden = (): boolean => (document.body.dataset.activeView ?? 'schematic') !== 'schematic';
     const onCopy = (e: ClipboardEvent): void => {
-      if (isTyping() || propsTarget !== null || selection.size === 0 || !doc) return;
+      if (hidden() || isTyping() || propsTarget !== null || selection.size === 0 || !doc) return;
       e.clipboardData?.setData('text/plain', copySelectionText(doc, selection));
       e.preventDefault();
     };
     const onCut = (e: ClipboardEvent): void => {
-      if (isTyping() || propsTarget !== null || selection.size === 0 || !doc) return;
+      if (hidden() || isTyping() || propsTarget !== null || selection.size === 0 || !doc) return;
       e.clipboardData?.setData('text/plain', copySelectionText(doc, selection));
       e.preventDefault();
       runCommand(deleteByIds(selection));
       setSelection(new Set());
     };
     const onPaste = (e: ClipboardEvent): void => {
-      if (isTyping() || propsTarget !== null || !doc) return;
+      if (hidden() || isTyping() || propsTarget !== null || !doc) return;
       const text = e.clipboardData?.getData('text/plain') ?? '';
       const payload = parsePastedText(text, doc);
       if (!payload) return;
@@ -2068,6 +2136,9 @@ export function SchematicEditor({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Hidden frames must not act on global hotkeys (editors stay mounted
+      // behind display:none; no stamp = standalone build, always active).
+      if ((document.body.dataset.activeView ?? 'schematic') !== 'schematic') return;
       // While a modal properties dialog is open, only Escape acts on the editor.
       if (propsTarget !== null && e.key !== 'Escape') return;
       if ((e.ctrlKey || e.metaKey) && e.key === ',') {
@@ -2159,6 +2230,24 @@ export function SchematicEditor({
         // ACTIONS::zoomTool (Ctrl+F5): drag a rectangle to zoom to it.
         e.preventDefault();
         setActiveTool('zoomTool');
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'u' && !e.shiftKey) {
+        // ACTIONS::toggleUnits (Ctrl+U): imperial <-> metric, remembering the
+        // last imperial unit (COMMON_TOOLS m_imperialUnit, initially inches).
+        e.preventDefault();
+        const imperial = toggles.has('unitsInches') || toggles.has('unitsMils');
+        onLeftToggle(imperial ? 'unitsMm' : lastImperialRef.current);
+      } else if (e.key === 'F5' && !e.altKey && !e.shiftKey) {
+        // ACTIONS::zoomRedraw default hotkey (F5).
+        e.preventDefault();
+        controller.current?.redraw();
+      } else if (e.key === 'F1' && !e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        // ACTIONS::zoomInCenter default hotkey (F1).
+        e.preventDefault();
+        controller.current?.zoomIn();
+      } else if (e.key === 'F2' && !e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        // ACTIONS::zoomOutCenter default hotkey (F2).
+        e.preventDefault();
+        controller.current?.zoomOut();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'h' && !e.shiftKey) {
         // SCH_ACTIONS::showHierarchy (Ctrl+H): toggle the navigator panel.
         e.preventDefault();
@@ -2260,6 +2349,22 @@ export function SchematicEditor({
           setHighlightItem(null);
           return;
         }
+        // Space — reset the status bar's relative (dx/dy) origin to the
+        // cursor (ACTIONS::resetLocalCoords).
+        if (e.key === ' ' && !e.shiftKey) {
+          e.preventDefault();
+          if (cursorRef.current) setLocalOrigin({ ...cursorRef.current });
+          return;
+        }
+        // Shift+Space — cycle the wire/bus line mode free → 90° → 45°
+        // (SCH_ACTIONS::lineModeNext; SCH_EDITOR_CONTROL::NextLineMode).
+        if (e.key === ' ' && e.shiftKey) {
+          e.preventDefault();
+          settings.updateEeschema((s) => {
+            s.drawing.line_mode = s.drawing.line_mode === 0 ? 1 : s.drawing.line_mode === 1 ? 2 : 0;
+          });
+          return;
+        }
         // N / Shift+N — next/previous grid (ACTIONS::gridNext/gridPrev).
         if (e.key.toLowerCase() === 'n') {
           e.preventDefault();
@@ -2308,6 +2413,7 @@ export function SchematicEditor({
     doFind,
     openFindDialog,
     openProperties,
+    toggles,
   ]);
 
   const units = toggles.has('unitsInches') ? 'in' : toggles.has('unitsMils') ? 'mils' : 'mm';
@@ -2318,6 +2424,23 @@ export function SchematicEditor({
     return `${(mm / 25.4).toFixed(4)}`;
   };
   const zoomPct = Math.round(((scale * 10000 * dpr) / PX_PER_MM_100) * 100);
+
+  // Properties panel rows (SCH_PROPERTIES_PANEL): the property grid for a
+  // single selected item; multi-selections keep the count message for now
+  // (upstream shows the properties common to the whole selection — #77).
+  const propRows = useMemo<PropRow[]>(() => {
+    if (!doc || selection.size !== 1) return [];
+    const ref = itemRefById(doc, [...selection][0]!);
+    return ref ? schPropertiesFor(doc, libById, ref) : [];
+  }, [doc, selection, libById]);
+
+  // Parse a distance typed into the grid, in the current units, back to IU.
+  const parseDist = (text: string): number | null => {
+    const n = Number(text.trim());
+    if (!Number.isFinite(n)) return null;
+    const mm = units === 'mm' ? n : units === 'mils' ? n * 0.0254 : n * 25.4;
+    return Math.round(mmToIU(mm));
+  };
 
   // A load failure before any document exists is fatal; once a document is open,
   // a bad Open just shows a dismissible banner and leaves the current sheet intact.
@@ -2412,11 +2535,20 @@ export function SchematicEditor({
               <div className="ze-panel grow">
                 <div className="ze-panel-header">Properties</div>
                 <div className="ze-panel-body">
-                  <div className="ze-muted">
-                    {selection.size === 0
-                      ? 'No objects selected'
-                      : `${selection.size} item(s) selected`}
-                  </div>
+                  {propRows.length > 0 ? (
+                    <SchPropertiesPanel
+                      rows={propRows}
+                      fmt={(iu) => fmt(iu)}
+                      parse={parseDist}
+                      onCommand={runCommand}
+                    />
+                  ) : (
+                    <div className="ze-muted">
+                      {selection.size === 0
+                        ? 'No objects selected'
+                        : `${selection.size} item(s) selected`}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -2516,6 +2648,7 @@ export function SchematicEditor({
             onImagePlaced={onImagePlaced}
             grabRequest={grabRequest}
             onContextMenuRequest={onContextMenuRequest}
+            onClarify={(x, y, items, additive) => setClarify({ x, y, items, additive })}
             onZoomArea={(box) => {
               controller.current?.zoomToBox(box);
               setActiveTool('select');
@@ -2544,6 +2677,20 @@ export function SchematicEditor({
               y={ctxMenu.y}
               items={buildContextMenu()}
               onClose={() => setCtxMenu(null)}
+            />
+          )}
+          {clarify && doc && (
+            <ContextMenu
+              x={clarify.x}
+              y={clarify.y}
+              items={clarify.items.map((ref) => ({
+                label: describeItem(doc, libById, ref),
+                action: () => {
+                  onSelect(ref.id, clarify.additive);
+                  setClarify(null);
+                },
+              }))}
+              onClose={() => setClarify(null)}
             />
           )}
           {ercResult !== null && (
@@ -2734,8 +2881,9 @@ export function SchematicEditor({
           X {cursor ? fmt(cursor.x) : '—'} Y {cursor ? fmt(cursor.y) : '—'}
         </span>
         <span className="cell">
-          dx {cursor ? fmt(cursor.x) : '—'} dy {cursor ? fmt(cursor.y) : '—'} dist{' '}
-          {cursor ? fmt(Math.hypot(cursor.x, cursor.y)) : '—'}
+          dx {cursor ? fmt(cursor.x - localOrigin.x) : '—'} dy{' '}
+          {cursor ? fmt(cursor.y - localOrigin.y) : '—'} dist{' '}
+          {cursor ? fmt(Math.hypot(cursor.x - localOrigin.x, cursor.y - localOrigin.y)) : '—'}
         </span>
         <span className="cell">
           grid {(() => {
@@ -2753,6 +2901,7 @@ export function SchematicEditor({
         <span className="cell" title="build">
           {__BUILD_STAMP__}
         </span>
+        <span className="cell">{SCH_TOOL_MSGS[activeTool] ?? ''}</span>
       </div>
 
       {chooserOpen && (
