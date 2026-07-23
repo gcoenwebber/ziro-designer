@@ -3018,6 +3018,7 @@ export function SchematicEditor({
           {fieldsTableOpen && (
             <DialogSymbolFieldsTable
               docs={liveDocs()}
+              fieldTemplates={setup.fieldTemplates}
               onApply={applyFieldsEdits}
               onClose={() => setFieldsTableOpen(false)}
             />
@@ -3129,6 +3130,7 @@ export function SchematicEditor({
         <SymbolPropertiesDialog
           symbol={propsSymbol}
           lib={libById.get(propsSymbol.libId)}
+          fieldTemplates={setup.fieldTemplates}
           onOk={(edit: SymbolEdit) => {
             runCommand(editSymbolProperties(propsTarget, edit));
             setPropsTarget(null);

@@ -40,14 +40,23 @@ const BASE_COLUMNS = ['Value', 'Footprint', 'Datasheet'];
 
 interface Props {
   docs: ReadonlyMap<string, Schematic>;
+  /** Schematic Setup > Field Name Templates: template columns are offered even
+   *  when no symbol carries the field yet (dialog_symbol_fields_table.cpp). */
+  fieldTemplates?: readonly { name: string }[];
   onApply: (edits: FieldsEdits) => void;
   onClose: () => void;
 }
 
-export function DialogSymbolFieldsTable({ docs, onApply, onClose }: Props): JSX.Element {
+export function DialogSymbolFieldsTable({
+  docs,
+  fieldTemplates,
+  onApply,
+  onClose,
+}: Props): JSX.Element {
   const rows = useMemo(() => buildFieldsRows(docs), [docs]);
   // Columns: the built-ins plus every custom field present (Reference shown
-  // read-only first — re-numbering belongs to Annotate).
+  // read-only first — re-numbering belongs to Annotate), plus any template
+  // fieldnames not already present.
   const columns = useMemo(() => {
     const extra = new Set<string>();
     for (const r of rows) {
@@ -55,8 +64,11 @@ export function DialogSymbolFieldsTable({ docs, onApply, onClose }: Props): JSX.
         if (k !== 'Reference' && k !== 'Description' && !BASE_COLUMNS.includes(k)) extra.add(k);
       }
     }
+    for (const t of fieldTemplates ?? []) {
+      if (t.name && t.name !== 'Reference' && !BASE_COLUMNS.includes(t.name)) extra.add(t.name);
+    }
     return [...BASE_COLUMNS, ...extra];
-  }, [rows]);
+  }, [rows, fieldTemplates]);
 
   // Pending cell edits keyed "file\0id" -> { field: value }.
   const [pending, setPending] = useState<Map<string, Record<string, string>>>(new Map());

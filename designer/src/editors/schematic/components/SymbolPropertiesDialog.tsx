@@ -1,5 +1,6 @@
 import { iuToMM } from '@ziroeda/common';
 import { mmToIU, symbolTransform, composeMirror, orientationFromTransform } from '@ziroeda/common';
+import type { FieldTemplate } from '../schematic_settings.js';
 import { useMemo, useState } from 'react';
 import {
   effectiveHorizJustify,
@@ -53,6 +54,10 @@ interface Row {
 interface Props {
   symbol: SchSymbol;
   lib?: LibSymbol;
+  /** Schematic Setup > Field Name Templates: names not yet on the symbol are
+   *  offered as empty rows (dialog_symbol_properties.cpp appends them with the
+   *  template's Visible flag; named-but-empty rows survive OK, like upstream). */
+  fieldTemplates?: readonly FieldTemplate[];
   onOk: (edit: SymbolEdit) => void;
   onCancel: () => void;
 }
@@ -76,14 +81,20 @@ function absField(row: Row, sym: SchSymbol): SchField {
   };
 }
 
-export function SymbolPropertiesDialog({ symbol, lib, onOk, onCancel }: Props): JSX.Element {
+export function SymbolPropertiesDialog({
+  symbol,
+  lib,
+  fieldTemplates,
+  onOk,
+  onCancel,
+}: Props): JSX.Element {
   const unitCount = useMemo(
     () => (lib ? lib.units.reduce((m, u) => Math.max(m, u.unit), 0) : 1),
     [lib],
   );
 
-  const [rows, setRows] = useState<Row[]>(() =>
-    symbol.fields.map((f) => ({
+  const [rows, setRows] = useState<Row[]>(() => {
+    const out: Row[] = symbol.fields.map((f) => ({
       key: f.key,
       value: f.value,
       at: f.at ? { x: f.at.x - symbol.at.x, y: f.at.y - symbol.at.y } : { x: 0, y: 0 },
@@ -91,8 +102,22 @@ export function SymbolPropertiesDialog({ symbol, lib, onOk, onCancel }: Props): 
       effects: f.effects ?? { hidden: false },
       nameShown: !!f.nameShown,
       source: f.source,
-    })),
-  );
+    }));
+    // Add in any template fieldnames not yet defined (TransferDataToWindow).
+    const defined = new Set(out.map((r) => r.key));
+    for (const t of fieldTemplates ?? []) {
+      if (t.name && !defined.has(t.name))
+        out.push({
+          key: t.name,
+          value: '',
+          at: { x: 0, y: 0 },
+          angle: 0,
+          effects: { hidden: !t.visible },
+          nameShown: false,
+        });
+    }
+    return out;
+  });
   const [selRow, setSelRow] = useState(0);
 
   // Orientation & mirror decompose exactly as TransferDataToWindow: choices are
