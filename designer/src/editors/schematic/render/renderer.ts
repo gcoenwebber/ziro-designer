@@ -177,6 +177,17 @@ export interface RenderOpts {
   /** Pen width (IU) for zero-width strokes — the plot dialog's "Minimum line
    *  width" (default pen thickness). Unset = KiCad's 6-mil default. */
   defaultPenIU?: number;
+  /** Effective junction-dot diameter (IU) for junctions with no explicit
+   *  diameter (SCHEMATIC_SETTINGS::GetJunctionSize()). A value ≤ 1 means the
+   *  user chose "None" — no dot is drawn. Unset = DEFAULT_JUNCTION_DIAM. */
+  junctionDiameterIU?: number;
+  /** Dashed-line dash / gap lengths as multiples of the line width
+   *  (m_DashedLineDashRatio / m_DashedLineGapRatio; ISO 128-2 defaults 12 / 3). */
+  dashLengthRatio?: number;
+  gapLengthRatio?: number;
+  /** Label / pin-text lift as a fraction of text size (m_TextOffsetRatio;
+   *  default 0.15 — the Formatting panel's percent value ÷ 100). */
+  textOffsetRatio?: number;
   /** selection.thickness (mils). */
   selectionThicknessMils: number;
   /** selection.highlight_thickness (mils). */
@@ -210,9 +221,18 @@ export const DEFAULT_RENDER_OPTS: RenderOpts = {
 
 const MM = 10000; // IU per mm
 const DEFAULT_LINE_WIDTH = 0.1524 * MM; // ~6 mil, KiCad default
+const DEFAULT_JUNCTION_DIAM = 0.9144 * MM; // 36 mil (eeschema/default_values.h)
 // The pen for zero-width strokes; plot/print override it per render via
 // RenderOpts.defaultPenIU (KiCad's plot "minimum line width" setting).
 let g_defaultPen = DEFAULT_LINE_WIDTH;
+// The junction-dot diameter for diameter-0 junctions, from Schematic Setup >
+// Formatting (SCH_JUNCTION::getEffectiveShape falls back to settings size).
+let g_junctionDiam = DEFAULT_JUNCTION_DIAM;
+// Dashed-line ratios (m_DashedLineDashRatio / m_DashedLineGapRatio) and the
+// label/pin text lift (m_TextOffsetRatio), from Schematic Setup > Formatting.
+let g_dashRatio = 12;
+let g_gapRatio = 3;
+let g_textOffsetRatio = 0.15;
 const _GRID = 1.27 * MM; // 50 mil
 
 function libUnitMatches(u: LibSymbolUnit, unit: number, bodyStyle: number): boolean {
@@ -241,23 +261,29 @@ function drawLockBadge(ctx: CanvasRenderingContext2D, x: number, y: number, them
 }
 
 /**
- * Apply a KiCad line style to the context (STROKE_PARAMS::Stroke): dash = 12×width,
- * gap = 3×width, dot ≈ 1×width (ISO 128-2 ratios). Resets to solid otherwise.
+ * Apply a KiCad line style to the context (STROKE_PARAMS::Stroke). Segment
+ * lengths come from RENDER_SETTINGS::GetDashLength/GetGapLength/GetDotLength
+ * (render_settings.cpp): with the ISO 128-2 correction of 1.0, dash =
+ * (dashRatio − 1) × width, gap = (gapRatio + 1) × width, dot = 0.2 × width.
+ * The ratios are Schematic Setup > Formatting's dashed-line settings.
  */
 function setDash(ctx: CanvasRenderingContext2D, type: string | undefined, width: number): void {
   const w = width > 0 ? width : g_defaultPen;
+  const dash = Math.max(g_dashRatio - 1, 1) * w;
+  const gap = Math.max(g_gapRatio + 1, 1) * w;
+  const dot = 0.2 * w;
   switch (type) {
     case 'dash':
-      ctx.setLineDash([12 * w, 3 * w]);
+      ctx.setLineDash([dash, gap]);
       break;
     case 'dot':
-      ctx.setLineDash([w, 3 * w]);
+      ctx.setLineDash([dot, gap]);
       break;
     case 'dash_dot':
-      ctx.setLineDash([12 * w, 3 * w, w, 3 * w]);
+      ctx.setLineDash([dash, gap, dot, gap]);
       break;
     case 'dash_dot_dot':
-      ctx.setLineDash([12 * w, 3 * w, w, 3 * w, w, 3 * w]);
+      ctx.setLineDash([dash, gap, dot, gap, dot, gap]);
       break;
     default:
       ctx.setLineDash([]);
@@ -294,6 +320,14 @@ export function renderSchematic(
 ): void {
   g_defaultPen =
     opts.defaultPenIU && opts.defaultPenIU > 0 ? opts.defaultPenIU : DEFAULT_LINE_WIDTH;
+  g_junctionDiam =
+    opts.junctionDiameterIU && opts.junctionDiameterIU > 0
+      ? opts.junctionDiameterIU
+      : DEFAULT_JUNCTION_DIAM;
+  g_dashRatio = opts.dashLengthRatio && opts.dashLengthRatio > 0 ? opts.dashLengthRatio : 12;
+  g_gapRatio = opts.gapLengthRatio && opts.gapLengthRatio > 0 ? opts.gapLengthRatio : 3;
+  g_textOffsetRatio =
+    opts.textOffsetRatio !== undefined && opts.textOffsetRatio >= 0 ? opts.textOffsetRatio : 0.15;
   const libById = new Map<string, LibSymbol>();
   for (const lib of sch.libSymbols) libById.set(lib.libId, lib);
 
@@ -378,7 +412,8 @@ export function renderSchematic(
     ctx.strokeStyle = HALO_COLOR;
     sch.junctions.forEach((j, i) => {
       if (!hl(refId('junction', j.uuid, i))) return;
-      const d = j.diameter > 0 ? j.diameter : 0.9 * MM;
+      const d = j.diameter > 0 ? j.diameter : g_junctionDiam;
+      if (d <= 1) return; // settings size "None": nothing to halo
       ctx.lineWidth = shadowWidth;
       ctx.beginPath();
       ctx.arc(j.at.x, j.at.y, d / 2, 0, Math.PI * 2);
@@ -473,12 +508,15 @@ export function renderSchematic(
   // overrides the layer colour (SCH_JUNCTION::GetJunctionColor).
   sch.junctions.forEach((j, i) => {
     if (!inView(j.at.x, j.at.y, j.at.x, j.at.y)) return;
+    // Diameter 0 = "use schematic settings"; a settings size of ≤1 IU is the
+    // "None" choice — the junction exists but draws no dot (sch_junction.cpp).
+    const d = j.diameter > 0 ? j.diameter : g_junctionDiam;
+    if (d <= 1) return;
     ctx.fillStyle = hl(refId('junction', j.uuid, i))
       ? theme.netHighlight
       : j.color
         ? cssColor(j.color)
         : theme.junction;
-    const d = j.diameter > 0 ? j.diameter : 0.9 * MM;
     ctx.beginPath();
     ctx.arc(j.at.x, j.at.y, d / 2, 0, Math.PI * 2);
     ctx.fill();
@@ -1190,8 +1228,8 @@ function drawLabel(
             : theme.noText
           : theme.label;
   // SCH_LABEL_BASE::GetSchematicTextOffset: lift the text clear of the wire by
-  // m_TextOffsetRatio (0.15) x text size plus the pen width (sch_label.cpp).
-  const dist = Math.round(0.15 * h) + g_defaultPen;
+  // m_TextOffsetRatio x text size plus the pen width (sch_label.cpp).
+  const dist = Math.round(g_textOffsetRatio * h) + g_defaultPen;
   // Reading direction unit vector for the spin style (where the text flows).
   const flow =
     spin === SPIN.LEFT
@@ -1360,7 +1398,9 @@ function drawSelectionShadows(
   // Junctions: a slightly larger filled disc under the dot.
   sch.junctions.forEach((j, i) => {
     if (!selection.has(refId('junction', j.uuid, i))) return;
-    const r = (j.diameter > 0 ? j.diameter : 0.9 * MM) / 2 + width / 2;
+    const d = j.diameter > 0 ? j.diameter : g_junctionDiam;
+    if (d <= 1) return; // settings size "None": no dot to underlay
+    const r = d / 2 + width / 2;
     ctx.beginPath();
     ctx.arc(j.at.x, j.at.y, r, 0, Math.PI * 2);
     ctx.fill();
@@ -1614,7 +1654,7 @@ function drawLibUnit(
   // Pins (SCH_PAINTER::draw(SCH_PIN) + PIN_LAYOUT_CACHE placement).
   const DEFAULT_TEXT = 1.27 * MM;
   // getPinTextOffset: MilsToIU(round(24 * m_TextOffsetRatio)), default ratio 0.15.
-  const TEXT_OFFSET = Math.round(24 * 0.15) * 254;
+  const TEXT_OFFSET = Math.round(24 * g_textOffsetRatio) * 254;
   let pinIndex = pinIndexStart;
   for (const pin of unit.pins) {
     const idx = pinIndex++;

@@ -469,6 +469,14 @@ export function App(): JSX.Element {
             onExit={goHome}
             onShowSchematic={hasSchematic ? showSchematic : undefined}
             onShowFootprintEditor={showFootprintEditor}
+            onBoardChange={(text: string) => onProjectChange([{ name: pcbFile.name, text }])}
+            onSaveBoard={(text: string) => {
+              const name = pcbFile.name;
+              setProjectFiles((prev) =>
+                prev ? prev.map((f) => (f.name === name ? { ...f, text } : f)) : prev,
+              );
+              persistFilesNow([{ name, text }]);
+            }}
             projectName={projectName}
             projectFiles={projectFiles ?? undefined}
           />

@@ -65,10 +65,16 @@ import {
 } from '@ziroeda/pcbnew';
 import { MenuBar, type Menu } from '../../ui/MenuBar.js';
 import { Toolbar } from '../../ui/Toolbar.js';
+import { StatusField, STATUS_FIELD_TEMPLATES } from '../../ui/StatusField.js';
 import { DialogPcbFind, DEFAULT_PCB_FIND, type PcbFindOptions } from './dialogs/dialog_find.js';
 import { DialogPageSettings } from '../schematic/dialogs/dialog_page_settings.js';
 import { DialogPcbPrint } from './dialogs/dialog_print_pcb.js';
 import { DialogPcbPlot } from './dialogs/dialog_plot_pcb.js';
+import {
+  DialogBoardSetup,
+  defaultBoardSetup,
+  type BoardSetupValues,
+} from './dialogs/dialog_board_setup.js';
 import {
   buildScene,
   buildDrawSteps,
@@ -597,6 +603,8 @@ export function PcbEditor({
   onExit,
   onShowSchematic,
   onShowFootprintEditor,
+  onSaveBoard,
+  onBoardChange,
   projectName,
   projectFiles,
 }: {
@@ -606,6 +614,12 @@ export function PcbEditor({
   onShowSchematic?: () => void;
   /** Open the Footprint Editor (the top-toolbar button / Tools menu). */
   onShowFootprintEditor?: () => void;
+  /** Save the board into the project (cloud/file-manager storage); when
+   *  absent, Save falls back to a local download. */
+  onSaveBoard?: (text: string) => void;
+  /** Debounced autosave sink (the app's coalesced project autosave): board
+   *  edits sync automatically like the schematic's. */
+  onBoardChange?: (text: string) => void;
   /** Project name shown as "<project> — PCB Editor" in the menu bar. */
   projectName?: string;
   /** The open project's files (name + text) — lets the 3D viewer resolve
@@ -613,6 +627,9 @@ export function PcbEditor({
   projectFiles?: { name: string; text: string }[];
 }): JSX.Element {
   const [board, setBoard] = useState<Board | null>(null);
+  // Unsaved-changes flag: '*' in the title while modified, Save greys when
+  // clean (KiCad's IsContentModified / m_infoBar save affordance).
+  const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [visible, setVisible] = useState<ReadonlySet<string>>(new Set());
   const [activeLayer, setActiveLayer] = useState('F.Cu');
@@ -656,8 +673,10 @@ export function PcbEditor({
   const [netColorMode, setNetColorMode] = useState<'all' | 'ratsnest' | 'off'>('ratsnest');
   const [ratsnestMode, setRatsnestMode] = useState<'all' | 'visible' | 'off'>('all');
   const [netOptsOpen, setNetOptsOpen] = useState(false);
-  // Footprints whose local ratsnest is forced on (PCB_ACTIONS::localRatsnestTool).
-  const [localRats, setLocalRats] = useState<ReadonlySet<number>>(new Set());
+  // Pads whose local ratsnest is forced on, keyed `fp:pad` — the tool works at
+  // PAD level (BOARD_INSPECTION_TOOL::LocalRatsnestTool toggles
+  // PAD::SetLocalRatsnestVisible; a footprint click sets all its pads).
+  const [localRats, setLocalRats] = useState<ReadonlySet<string>>(new Set());
   const [selFilter, setSelFilter] = useState<Set<string>>(
     new Set(PCB_FILTER_CATS.map((c) => c.key)),
   );
@@ -781,6 +800,10 @@ export function PcbEditor({
   const [pageDlgOpen, setPageDlgOpen] = useState(false);
   const [printDlgOpen, setPrintDlgOpen] = useState(false);
   const [plotDlgOpen, setPlotDlgOpen] = useState(false);
+  // Board Setup (DIALOG_BOARD_SETUP). Values seed from board_design_settings.h
+  // defaults for now; project-file round-trip lands with a later phase.
+  const [boardSetupOpen, setBoardSetupOpen] = useState(false);
+  const [boardSetup, setBoardSetup] = useState<BoardSetupValues>(defaultBoardSetup);
   // Find dialog (DIALOG_FIND): query, options, hit cursor + status line.
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState('');
@@ -815,6 +838,21 @@ export function PcbEditor({
   const sceneRef = useRef<BoardScene | null>(null);
   const rafRef = useRef(0);
   const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+
+  // Auto-sync: a moment after any edit, serialize into the app's coalesced
+  // autosave. The title's '*' shows while the write is pending and clears once
+  // handed off — every change reaches the project storage without Ctrl+S.
+  useEffect(() => {
+    if (!dirty || !onBoardChange) return;
+    const id = setTimeout(() => {
+      const brd = boardRef.current;
+      if (brd) {
+        onBoardChange(serializeBoard(brd));
+        setDirty(false);
+      }
+    }, 1000);
+    return () => clearTimeout(id);
+  }, [dirty, board, onBoardChange]);
 
   const showAppearance = toggles.has('showLayersManager');
   const showProperties = toggles.has('showProperties');
@@ -1376,7 +1414,7 @@ export function PcbEditor({
     // cursor. crosshairSmall = an 80px cross (default), crosshairFull = full
     // screen lines, crosshair45 = a big diagonal X. Drawn topmost.
     const cur = cursorRef.current;
-    if (cur) {
+    if (cur && activeToolRef.current !== 'localRatsnestTool') {
       const snapped = snapToGrid(cur);
       const px = snapped.x * sx + v.tx;
       const py = snapped.y * v.scale + v.ty;
@@ -1474,6 +1512,7 @@ export function PcbEditor({
       const prev = boardRef.current;
       if (prev) undoRef.current.push(prev);
       redoRef.current = [];
+      setDirty(true);
       setBoardModel(next);
     },
     [setBoardModel],
@@ -1509,6 +1548,7 @@ export function PcbEditor({
     const prev = undoRef.current.pop();
     if (!prev || !boardRef.current) return;
     redoRef.current.push(boardRef.current);
+    setDirty(true);
     setBoardModel(prev);
     setSelection(new Set());
   }, [setBoardModel]);
@@ -1517,6 +1557,7 @@ export function PcbEditor({
     const next = redoRef.current.pop();
     if (!next || !boardRef.current) return;
     undoRef.current.push(boardRef.current);
+    setDirty(true);
     setBoardModel(next);
     setSelection(new Set());
   }, [setBoardModel]);
@@ -2723,24 +2764,37 @@ export function PcbEditor({
             }
           }
         } else if (activeToolRef.current === 'localRatsnestTool') {
-          // PCB_ACTIONS::localRatsnestTool: clicking a footprint toggles its
-          // ratsnest on while the global ratsnest is hidden.
+          // BOARD_INSPECTION_TOOL::LocalRatsnestTool: try a PAD under the
+          // cursor first (PadFilter), then a FOOTPRINT; clicking empty space
+          // clears every local override back to the global ratsnest setting.
           const w = worldAt(e.clientX, e.clientY);
           const brd = boardRef.current;
           if (w && brd) {
-            // A footprint hit, or any of its children (pad / text) — the
-            // heuristics prefer the pad, but the tool acts on the footprint.
-            const fpHit = boardHitCandidates(brd, w, tolOf())
-              .map((id) => parseBoardItemId(id))
-              .find((r) => r?.kind === 'footprint' || r?.kind === 'pad' || r?.kind === 'fptext');
-            if (fpHit) {
-              setLocalRats((prev) => {
-                const next = new Set(prev);
-                if (next.has(fpHit.index)) next.delete(fpHit.index);
-                else next.add(fpHit.index);
-                return next;
-              });
-            }
+            const refs = boardHitCandidates(brd, w, tolOf()).map((id) => parseBoardItemId(id));
+            const padHit2 = refs.find((r) => r?.kind === 'pad');
+            const fpHit = refs.find((r) => r?.kind === 'footprint');
+            setLocalRats((prev) => {
+              const next = new Set(prev);
+              if (padHit2) {
+                const key = `${padHit2.index}:${padHit2.sub ?? 0}`;
+                if (next.has(key)) next.delete(key);
+                else next.add(key);
+              } else if (fpHit) {
+                const fp = brd.footprints[fpHit.index];
+                if (fp && fp.pads.length > 0) {
+                  // enable = !firstPad.GetLocalRatsnestVisible()
+                  const enable = !next.has(`${fpHit.index}:0`);
+                  fp.pads.forEach((_, pi) => {
+                    const key = `${fpHit.index}:${pi}`;
+                    if (enable) next.add(key);
+                    else next.delete(key);
+                  });
+                }
+              } else {
+                next.clear();
+              }
+              return next;
+            });
           }
         } else if (DRAW_SHAPE_TOOLS[activeToolRef.current]) {
           const w = worldAt(e.clientX, e.clientY);
@@ -3233,9 +3287,10 @@ export function PcbEditor({
       const anyCuVisible = [...visible].some((l) => /\.Cu$/.test(l));
       const layerOn = (l: string): boolean => (l === 'through' ? anyCuVisible : visible.has(l));
       const localNets = new Set<number>(forcedLocalNets);
-      for (const fi of localRats) {
-        const fp = brd.footprints[fi];
-        if (fp) for (const pad of fp.pads) if (pad.net && pad.net > 0) localNets.add(pad.net);
+      for (const key of localRats) {
+        const [fi, pi] = key.split(':').map(Number);
+        const pad = brd.footprints[fi ?? -1]?.pads[pi ?? -1];
+        if (pad?.net && pad.net > 0) localNets.add(pad.net);
       }
       const globalOn = objects.ratsnest && ratsnestMode !== 'off';
       const list: { e: RatsnestEdge; color: string }[] = [];
@@ -3391,7 +3446,11 @@ export function PcbEditor({
   const onTopAction = (id: string): void => {
     switch (id) {
       case 'save':
-        saveCopy();
+        // Save writes into the project's file manager (cloud storage); users
+        // download from there. "Save a Copy…" keeps the local download.
+        if (onSaveBoard) onSaveBoard(boardRef.current ? serializeBoard(boardRef.current) : text);
+        else saveCopy();
+        setDirty(false);
         break;
       case 'undo':
         undo();
@@ -3407,6 +3466,9 @@ export function PcbEditor({
         break;
       case 'pageSettings':
         setPageDlgOpen(true);
+        break;
+      case 'boardSetup':
+        setBoardSetupOpen(true);
         break;
       case 'print':
         setPrintDlgOpen(true);
@@ -3481,7 +3543,11 @@ export function PcbEditor({
         { label: 'New Board', disabled: dis },
         { label: 'Open…', disabled: dis },
         { sep: true },
-        { label: 'Save', action: saveCopy, shortcut: 'Ctrl+S' },
+        {
+          label: 'Save',
+          action: () => onTopAction('save'),
+          shortcut: 'Ctrl+S',
+        },
         { label: 'Save a Copy…', action: saveCopy },
         { sep: true },
         { label: 'Import', disabled: dis },
@@ -3884,12 +3950,20 @@ export function PcbEditor({
         }
         title={
           <>
-            <b>{projectName || fileName.replace(/\.kicad_pcb$/i, '') || 'No project'}</b>
+            <b>
+              {dirty ? '*' : ''}
+              {projectName || fileName.replace(/\.kicad_pcb$/i, '') || 'No project'}
+            </b>
             &nbsp;—&nbsp;PCB Editor
           </>
         }
       />
-      <Toolbar entries={PCB_TOP_TOOLBAR} orientation="horizontal" onActivate={onTopAction} />
+      <Toolbar
+        entries={PCB_TOP_TOOLBAR}
+        orientation="horizontal"
+        disabledIds={dirty ? undefined : new Set(['save'])}
+        onActivate={onTopAction}
+      />
 
       {/* TOP_AUX bar (toolbars_pcb_editor.cpp TOOLBAR_LOC::TOP_AUX): track
           width + auto-width | via size | layer selector + layer pair | grid |
@@ -4069,7 +4143,15 @@ export function PcbEditor({
           <canvas
             ref={canvasRef}
             // Hide the native pointer; KiCad draws its own crosshair on the canvas.
-            style={{ position: 'absolute', inset: 0, cursor: 'none' }}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              // Picker tools show a real cursor: KICURSOR::BULLSEYE resolves
+              // to the stock wxCURSOR_BULLSEYE on GTK (IsStockCursorOk), which
+              // is the SYSTEM crosshair cursor — the same one CSS 'crosshair'
+              // uses, so the web cursor matches desktop KiCad exactly.
+              cursor: activeTool === 'localRatsnestTool' ? 'crosshair' : 'none',
+            }}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
@@ -5005,6 +5087,16 @@ export function PcbEditor({
           onClose={() => setPlotDlgOpen(false)}
         />
       )}
+      {boardSetupOpen && (
+        <DialogBoardSetup
+          value={boardSetup}
+          onOk={(next) => {
+            setBoardSetup(next);
+            setBoardSetupOpen(false);
+          }}
+          onClose={() => setBoardSetupOpen(false)}
+        />
+      )}
       {findOpen && (
         <DialogPcbFind
           query={findQuery}
@@ -5032,21 +5124,25 @@ export function PcbEditor({
           r/theta | grid | units | current-tool (grows) | constraint mode. */}
       <div className="ze-statusbar">
         <span className="cell msg" data-testid="pcb-status-msg" />
-        <span className="cell">Z {scale > 0 ? (scale * 1000).toFixed(2) : '—'}</span>
-        <span className="cell" data-testid="pcb-absolute-coords">
+        <StatusField template={STATUS_FIELD_TEMPLATES.zoom}>
+          Z {scale > 0 ? (scale * 1000).toFixed(2) : '—'}
+        </StatusField>
+        <StatusField template={STATUS_FIELD_TEMPLATES.coords} testId="pcb-absolute-coords">
           {statusCoordText}
-        </span>
-        <span className="cell" data-testid="pcb-relative-coords">
+        </StatusField>
+        <StatusField template={STATUS_FIELD_TEMPLATES.deltas} testId="pcb-relative-coords">
           {statusDeltaText}
-        </span>
-        <span className="cell">{gridText}</span>
-        <span className="cell">{unitLabel === 'in' ? 'inches' : unitLabel}</span>
+        </StatusField>
+        <StatusField template={STATUS_FIELD_TEMPLATES.grid}>{gridText}</StatusField>
+        <StatusField template={STATUS_FIELD_TEMPLATES.units}>
+          {unitLabel === 'in' ? 'inches' : unitLabel}
+        </StatusField>
         <span className="cell tool" data-testid="pcb-tool-msg">
           {toolMsg}
         </span>
-        <span className="cell constraint" data-testid="pcb-constraint-msg">
+        <StatusField template={STATUS_FIELD_TEMPLATES.constraint} testId="pcb-constraint-msg">
           {constraintMsg}
-        </span>
+        </StatusField>
       </div>
     </div>
   );

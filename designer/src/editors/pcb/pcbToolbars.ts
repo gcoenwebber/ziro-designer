@@ -18,8 +18,8 @@ const todo = { disabled: true } as const;
 
 /** TOP_MAIN toolbar. */
 export const PCB_TOP_TOOLBAR: ToolEntry[] = [
-  { id: 'new', icon: 'new', title: 'New board' },
-  { id: 'open', icon: 'open', title: 'Open' },
+  // doNew/open appear only when Kiface().IsSingle() — standalone pcbnew. This
+  // editor is project-hosted (KiCad project mode), so they are not shown.
   { id: 'save', icon: 'save', title: 'Save' },
   sep,
   { id: 'boardSetup', icon: 'boardSetup', title: 'Board setup' },
@@ -58,6 +58,12 @@ export const PCB_TOP_TOOLBAR: ToolEntry[] = [
   sep,
   { id: 'showEeschema', icon: 'showEeschema', title: 'Open schematic in Schematic Editor' },
 ];
+
+// PCB_ACTION_TOOLBAR_CONTROLS::currentVariant closes TOP_MAIN as a CHOICE
+// control (not a bitmap button) and ACTION_TOOLBAR_CONTROLS::ipcScripting is
+// a region for plugin buttons — empty (invisible) until plugins register,
+// exactly like plugin-less KiCad. The editor renders the variant dropdown as
+// the toolbar's trailing control.
 
 /** LEFT (view options) toolbar. */
 export const PCB_LEFT_TOOLBAR: ToolEntry[] = [

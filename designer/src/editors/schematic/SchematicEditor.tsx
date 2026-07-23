@@ -89,6 +89,8 @@ import {
   itemRefById,
   schPropertiesFor,
   type PropRow,
+  getMsgPanelItems,
+  type MsgPanelItem,
 } from '@ziroeda/eeschema';
 import {
   SchematicCanvas,
@@ -97,6 +99,7 @@ import {
   type PendingLabel,
 } from './components/SchematicCanvas.js';
 import { LabelDialog, type LabelFormat } from './components/LabelDialog.js';
+import { StatusField, STATUS_FIELD_TEMPLATES } from '../../ui/StatusField.js';
 import { SymbolPropertiesDialog } from './components/SymbolPropertiesDialog.js';
 import { ErcDialog } from './components/ErcDialog.js';
 import {
@@ -125,6 +128,8 @@ import {
   defaultSchematicSetup,
   type SchematicSetup,
 } from './dialogs/dialog_schematic_setup.js';
+import { findProjectPro, readSchematicSetup, writeSchematicSetupText } from './project_settings.js';
+import { IU_PER_MILS, junctionDotDiameterIU } from './schematic_settings.js';
 import { DialogExportBom } from './dialogs/dialog_export_bom.js';
 import { DialogExportNetlist } from './dialogs/dialog_export_netlist.js';
 import { DialogSymbolFieldsTable, type FieldsEdits } from './dialogs/dialog_symbol_fields_table.js';
@@ -300,6 +305,10 @@ export function SchematicEditor({
       return null;
     }
   }, []);
+  // Unsaved-changes flag ('*' in the title until the autosave hand-off; Save
+  // greys when clean) — same affordance as the PCB editor / KiCad's title.
+  const [dirty, setDirty] = useState(false);
+  const dirtySkipRef = useRef(true);
 
   const [doc, setDoc] = useState<Schematic | null>(initial);
   // Multi-sheet project: every parsed document by basename, the root file, and a
@@ -941,17 +950,53 @@ export function SchematicEditor({
     return noExt || doc?.titleBlock?.title || 'schematic';
   }, [currentFile, fileName, doc]);
 
+  // Drawing defaults shared by every output (screen, print, plot), derived
+  // from Schematic Setup > Formatting the way SCH_RENDER_SETTINGS is seeded
+  // from SCHEMATIC_SETTINGS upstream (eeschema_config.cpp).
+  const drawingDefaults = useMemo(
+    () => ({
+      junctionDiameterIU: junctionDotDiameterIU(setup),
+      dashLengthRatio: setup.formatting.dashLengthRatio,
+      gapLengthRatio: setup.formatting.gapLengthRatio,
+      // The panel stores percent (KiCad UI convention); the ratio is /100.
+      textOffsetRatio: setup.formatting.labelOffsetRatio / 100,
+    }),
+    [setup],
+  );
+
   // Print (DIALOG_PRINT): render the current sheet and open the browser print
   // flow, optionally with a different colour theme (m_useColorTheme choice).
   const doPrint = useCallback(
     (opts: PlotOpts, themeId?: string) => {
       const printTheme =
         themeId && BUILTIN_THEMES[themeId] ? BUILTIN_THEMES[themeId]!.theme : theme;
-      const o = activeSheet ? { ...opts, sheet: activeSheet } : opts;
+      // Junction dots, dash ratios and label offsets print at their Schematic
+      // Setup sizes, like the screen.
+      const o: PlotOpts = {
+        ...opts,
+        ...drawingDefaults,
+        ...(activeSheet ? { sheet: activeSheet } : {}),
+      };
       if (doc) printSheet(doc, printTheme, o, outputBaseName());
       setPrintOpen(false);
     },
-    [doc, theme, outputBaseName, activeSheet],
+    [doc, theme, outputBaseName, activeSheet, drawingDefaults],
+  );
+
+  // Print Preview (DIALOG_PRINT's Apply / OnPrintPreview): render into a new tab
+  // without auto-printing, and keep the dialog open so options can be adjusted.
+  const doPreview = useCallback(
+    (opts: PlotOpts, themeId?: string) => {
+      const printTheme =
+        themeId && BUILTIN_THEMES[themeId] ? BUILTIN_THEMES[themeId]!.theme : theme;
+      const o: PlotOpts = {
+        ...opts,
+        ...drawingDefaults,
+        ...(activeSheet ? { sheet: activeSheet } : {}),
+      };
+      if (doc) printSheet(doc, printTheme, o, outputBaseName(), true);
+    },
+    [doc, theme, outputBaseName, activeSheet, drawingDefaults],
   );
 
   // Bulk Edit Symbol Fields: apply the changed cells per sheet — the current
@@ -990,7 +1035,11 @@ export function SchematicEditor({
   const doPlot = useCallback(
     (format: PlotFormat, opts: PlotOpts, allPages: boolean, themeId?: string) => {
       const plotTheme = themeId && BUILTIN_THEMES[themeId] ? BUILTIN_THEMES[themeId]!.theme : theme;
-      const o = activeSheet ? { ...opts, sheet: activeSheet } : opts;
+      const o: PlotOpts = {
+        ...opts,
+        ...drawingDefaults,
+        ...(activeSheet ? { sheet: activeSheet } : {}),
+      };
       const one = (d: Schematic, name: string): void => {
         if (format === 'svg') plotSvg(d, plotTheme, o, name);
         else if (format === 'png') void plotPng(d, plotTheme, o, name);
@@ -1002,7 +1051,7 @@ export function SchematicEditor({
       } else if (doc) one(doc, outputBaseName());
       setPlotOpen(false);
     },
-    [doc, theme, outputBaseName, liveDocs, activeSheet],
+    [doc, theme, outputBaseName, liveDocs, activeSheet, drawingDefaults],
   );
   useEffect(() => {
     // Changed search settings restart the scan (upstream m_foundItemHighlight reset).
@@ -1140,6 +1189,9 @@ export function SchematicEditor({
     // drop any in-session sheet override for the freshly opened project.
     setRawFiles(initialProject ?? []);
     setSheetOverride(null);
+    // Hydrate the Schematic Setup from the project's .kicad_pro (SCHEMATIC/ERC/
+    // NET_SETTINGS live in the project file, like KiCad's project load).
+    setSetup(readSchematicSetup(initialProject ?? [], rootPro ?? undefined));
     // rootPro is a dep so switching the active project (same folder, different
     // .kicad_pro) reloads with the newly-pinned root sheet.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1440,10 +1492,33 @@ export function SchematicEditor({
 
   const promptOpen = useCallback(() => fileInputRef.current?.click(), []);
 
+  // Doc edits mark the title dirty; the flag clears after the app's coalesced
+  // autosave window (1.2 s) has taken the change. Mount / file switches skip.
+  useEffect(() => {
+    dirtySkipRef.current = true;
+  }, [currentFile]);
+  useEffect(() => {
+    if (dirtySkipRef.current) {
+      dirtySkipRef.current = false;
+      return;
+    }
+    setDirty(true);
+    const id = setTimeout(() => setDirty(false), 1600);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc]);
+
   const save = useCallback(() => {
+    setDirty(false);
     setDoc((d) => {
       if (!d) return d;
       const text = serializeSchematic(d);
+      if (onPersistFiles && currentFile !== DEFAULT_FILE) {
+        // Save writes into the project's file manager (cloud storage); a local
+        // copy can be downloaded from there (or via Save a Copy).
+        onPersistFiles([{ name: currentFile, text }]);
+        return d;
+      }
       const url = URL.createObjectURL(new Blob([text], { type: 'application/octet-stream' }));
       const a = document.createElement('a');
       a.href = url;
@@ -1572,6 +1647,9 @@ export function SchematicEditor({
       // Default pen for zero-width strokes = Schematic Setup > Formatting's
       // "Default line width" (SCHEMATIC_SETTINGS::m_DefaultLineWidth), mils→IU.
       defaultPenIU: mmToIU((setup.formatting.defaultLineWidthMils * 25.4) / 1000),
+      // Junction-dot size, dash ratios and label/pin text offsets from
+      // Schematic Setup > Formatting (SCH_RENDER_SETTINGS seeding).
+      ...drawingDefaults,
       selectionThicknessMils: es.selection.thickness,
       highlightThicknessMils: es.selection.highlight_thickness,
       grid: {
@@ -1597,7 +1675,7 @@ export function SchematicEditor({
         },
       },
     }),
-    [es, activeSheet],
+    [es, activeSheet, setup, drawingDefaults],
   );
 
   const inputPrefs = useMemo<InputPrefs>(
@@ -2458,6 +2536,18 @@ export function SchematicEditor({
     return [...names].sort((a, b) => a.localeCompare(b));
   }, [doc]);
 
+  // Message-panel rows (EDA_MSG_PANEL): exactly one selected item shows its
+  // GetMsgPanelInfo; empty and multi-selections clear the panel.
+  const msgPanelItems = useMemo<MsgPanelItem[]>(() => {
+    if (!doc || selection.size !== 1) return [];
+    const id = [...selection][0]!;
+    const ref = itemRefById(doc, id);
+    if (!ref) return [];
+    const code = netlist?.netByItem.get(id);
+    const net = code !== undefined ? netlist?.nets.find((n) => n.code === code) : undefined;
+    return getMsgPanelItems(doc, libById, ref, fmt, net?.name ?? null);
+  }, [doc, selection, libById, netlist, fmt]);
+
   // Parse a distance typed into the grid, in the current units, back to IU.
   const parseDist = (text: string): number | null => {
     const n = Number(text.trim());
@@ -2540,7 +2630,11 @@ export function SchematicEditor({
         }
         title={
           <>
-            <b>{projectName || 'No project'}</b>&nbsp;—&nbsp;Schematic Editor
+            <b>
+              {dirty ? '*' : ''}
+              {projectName || 'No project'}
+            </b>
+            &nbsp;—&nbsp;Schematic Editor
           </>
         }
       />
@@ -2548,7 +2642,7 @@ export function SchematicEditor({
       <Toolbar
         entries={TOP_TOOLBAR}
         orientation="horizontal"
-        disabledIds={navDisabled}
+        disabledIds={dirty ? navDisabled : new Set([...(navDisabled ?? []), 'save'])}
         onActivate={onTopAction}
       />
 
@@ -2795,11 +2889,8 @@ export function SchematicEditor({
           {printOpen && (
             <DialogPrint
               onPrint={doPrint}
+              onPreview={doPreview}
               themeId={es.appearance.color_theme}
-              onPageSetup={() => {
-                setPrintOpen(false);
-                setPageSettingsOpen(true);
-              }}
               onClose={() => setPrintOpen(false)}
             />
           )}
@@ -2833,6 +2924,21 @@ export function SchematicEditor({
               value={setup}
               onOk={(next) => {
                 setSetup(next);
+                // Commit to the project's .kicad_pro (SCHEMATIC_SETTINGS /
+                // ERC_SETTINGS / NET_SETTINGS all live there), preserving every
+                // key the dialog does not own — same flow as the drawing-sheet
+                // reference in applyPageSettings.
+                setRawFiles((prev) => {
+                  const pro = findProjectPro(prev, rootPro ?? undefined);
+                  if (!pro) return prev;
+                  const updated = writeSchematicSetupText(pro.text, next);
+                  if (updated === null || updated === pro.text) return prev;
+                  const changed = { name: pro.name, text: updated };
+                  // Persist now (not via the debounced autosave) so a reopen
+                  // straight after OK reads the new settings back.
+                  onPersistFiles?.([changed]);
+                  return prev.map((f) => (f.name === pro.name ? changed : f));
+                });
                 setSetupOpen(false);
               }}
               onCancel={() => setSetupOpen(false)}
@@ -2897,19 +3003,38 @@ export function SchematicEditor({
         />
       </div>
 
+      {/* EDA_DRAW_FRAME hosts a message panel above the 8-field status bar:
+          a single selected item's GetMsgPanelInfo rows; anything else clears
+          it (SCH_INSPECTION_TOOL::UpdateMessagePanel). */}
+      <div className="ze-msgpanel" data-testid="sch-message-panel">
+        {msgPanelItems.map((item) => (
+          <div className="ze-msgpanel-item" key={`${item.upper}:${item.lower}`}>
+            <div className="ze-msgpanel-upper">{item.upper}</div>
+            <div className="ze-msgpanel-lower">{item.lower || ' '}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* KISTATUSBAR's 8 fields (eda_draw_frame.cpp): message (grows) — the
+          net-highlight text lands here (UpdateNetHighlightStatus) | Z zoom |
+          absolute X/Y | relative dx/dy/dist | grid | units | current-tool
+          (grows) | constraint (unused by eeschema). */}
       <div className="ze-statusbar">
-        <span className="cell">
+        <span className="cell msg" data-testid="sch-status-msg">
+          {highlightName ? `Highlighted net: ${highlightName}` : ''}
+        </span>
+        <StatusField template={STATUS_FIELD_TEMPLATES.zoom}>
           Z {Number.isFinite(zoomPct) ? (zoomPct / 100).toFixed(2) : '1.00'}
-        </span>
-        <span className="cell">
+        </StatusField>
+        <StatusField template={STATUS_FIELD_TEMPLATES.coords}>
           X {cursor ? fmt(cursor.x) : '—'} Y {cursor ? fmt(cursor.y) : '—'}
-        </span>
-        <span className="cell">
+        </StatusField>
+        <StatusField template={STATUS_FIELD_TEMPLATES.deltas}>
           dx {cursor ? fmt(cursor.x - localOrigin.x) : '—'} dy{' '}
           {cursor ? fmt(cursor.y - localOrigin.y) : '—'} dist{' '}
           {cursor ? fmt(Math.hypot(cursor.x - localOrigin.x, cursor.y - localOrigin.y)) : '—'}
-        </span>
-        <span className="cell">
+        </StatusField>
+        <StatusField template={STATUS_FIELD_TEMPLATES.grid}>
           grid {(() => {
             const iu = renderOpts.grid.sizeIU;
             const mm = iuToMM(iu);
@@ -2919,13 +3044,14 @@ export function SchematicEditor({
                 ? (mm / 0.0254).toFixed(0)
                 : (mm / 25.4).toFixed(4);
           })()}
+        </StatusField>
+        <StatusField template={STATUS_FIELD_TEMPLATES.units}>
+          {units === 'in' ? 'inches' : units}
+        </StatusField>
+        <span className="cell tool" data-testid="sch-tool-msg">
+          {SCH_TOOL_MSGS[activeTool] ?? ''}
         </span>
-        <span className="cell">{highlightName ? `Net: ${highlightName}` : ''}</span>
-        <span className="cell grow">{units}</span>
-        <span className="cell" title="build">
-          {__BUILD_STAMP__}
-        </span>
-        <span className="cell">{SCH_TOOL_MSGS[activeTool] ?? ''}</span>
+        <StatusField template={STATUS_FIELD_TEMPLATES.constraint} />
       </div>
 
       {chooserOpen && (
@@ -2959,6 +3085,13 @@ export function SchematicEditor({
       {LABEL_TOOL_KINDS[activeTool] && !pendingLabel && !labelEdit && (
         <LabelDialog
           kind={LABEL_TOOL_KINDS[activeTool]!}
+          // New labels/text default to Schematic Setup > Formatting's text size
+          // (DIALOG_LABEL_PROPERTIES seeds from m_DefaultTextSize).
+          initialFormat={{
+            bold: false,
+            italic: false,
+            sizeIU: setup.formatting.defaultTextSizeMils * IU_PER_MILS,
+          }}
           suggestions={labelSuggestions}
           onOk={(text: string, shape: LabelShape, format: LabelFormat) =>
             setPendingLabel({
