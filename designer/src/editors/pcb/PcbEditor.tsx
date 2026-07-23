@@ -71,6 +71,11 @@ import { DialogPageSettings } from '../schematic/dialogs/dialog_page_settings.js
 import { DialogPcbPrint } from './dialogs/dialog_print_pcb.js';
 import { DialogPcbPlot } from './dialogs/dialog_plot_pcb.js';
 import {
+  DialogBoardSetup,
+  defaultBoardSetup,
+  type BoardSetupValues,
+} from './dialogs/dialog_board_setup.js';
+import {
   buildScene,
   buildDrawSteps,
   drawBoard,
@@ -795,6 +800,10 @@ export function PcbEditor({
   const [pageDlgOpen, setPageDlgOpen] = useState(false);
   const [printDlgOpen, setPrintDlgOpen] = useState(false);
   const [plotDlgOpen, setPlotDlgOpen] = useState(false);
+  // Board Setup (DIALOG_BOARD_SETUP). Values seed from board_design_settings.h
+  // defaults for now; project-file round-trip lands with a later phase.
+  const [boardSetupOpen, setBoardSetupOpen] = useState(false);
+  const [boardSetup, setBoardSetup] = useState<BoardSetupValues>(defaultBoardSetup);
   // Find dialog (DIALOG_FIND): query, options, hit cursor + status line.
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState('');
@@ -3458,6 +3467,9 @@ export function PcbEditor({
       case 'pageSettings':
         setPageDlgOpen(true);
         break;
+      case 'boardSetup':
+        setBoardSetupOpen(true);
+        break;
       case 'print':
         setPrintDlgOpen(true);
         break;
@@ -5073,6 +5085,16 @@ export function PcbEditor({
           board={board}
           visibleLayers={visible}
           onClose={() => setPlotDlgOpen(false)}
+        />
+      )}
+      {boardSetupOpen && (
+        <DialogBoardSetup
+          value={boardSetup}
+          onOk={(next) => {
+            setBoardSetup(next);
+            setBoardSetupOpen(false);
+          }}
+          onClose={() => setBoardSetupOpen(false)}
         />
       )}
       {findOpen && (
