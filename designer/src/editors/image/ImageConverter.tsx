@@ -381,6 +381,11 @@ export function ImageConverter({ onExitToHome }: { onExitToHome: () => void }): 
     <div className="imgc-frame ze-app">
       <MenuBar
         menus={menus}
+        leftSlot={
+          <div className="ze-home-link" onClick={onExitToHome} title="Back to project manager">
+            ⌂ ZiroEDA
+          </div>
+        }
         title={loaded ? `${loaded.fullName} — Image Converter` : 'Image Converter'}
       />
       <input
