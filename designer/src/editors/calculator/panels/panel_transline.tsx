@@ -199,6 +199,12 @@ export function PanelTransline(): JSX.Element {
   // Dielectric dispersion model (KiCad m_dielectricModelChoice + spec frequency).
   const [dielModel, setDielModel] = useState<'constant' | 'djordjevic_sarkar'>('constant');
   const [specFreqHz, setSpecFreqHz] = useState(1e9);
+  // Solder mask overlay (KiCad m_soldermask* controls; defaults from TRANSLINE::Init).
+  const [smPresent, setSmPresent] = useState(false);
+  const [smThickM, setSmThickM] = useState(20e-6);
+  const [smEr, setSmEr] = useState('3.5');
+  const [smTand, setSmTand] = useState('0.025');
+  const [smFills, setSmFills] = useState(true);
   const [angle, setAngle] = useState('90');
   const [result, setResult] = useState<TranslineAnalysis | null>(null);
   const [error, setError] = useState('');
@@ -232,6 +238,16 @@ export function PanelTransline(): JSX.Element {
   };
   const v = (key: string): number => phys[key] ?? 0;
 
+  // Mask correction applies to microstrip, coupled microstrip, CPW and CBCPW.
+  const maskApplies = ['microstrip', 'c_microstrip', 'cpw', 'gcpw'].includes(type);
+  const soldermask = () => ({
+    present: smPresent,
+    thicknessM: smThickM,
+    epsilonR: parseNum(smEr),
+    tanD: parseNum(smTand),
+    fillsGaps: smFills,
+  });
+
   const analyze = (): void => {
     setError('');
     try {
@@ -242,6 +258,7 @@ export function PanelTransline(): JSX.Element {
           r = microstripAnalyze(
             { widthM: v('w'), heightM: v('h'), thicknessM: v('t'), lengthM: v('l') },
             e,
+            soldermask(),
           );
           break;
         case 'cpw':
@@ -250,6 +267,7 @@ export function PanelTransline(): JSX.Element {
             { widthM: v('w'), gapM: v('s'), heightM: v('h'), thicknessM: v('t'), lengthM: v('l') },
             e,
             type === 'gcpw',
+            soldermask(),
           );
           break;
         case 'rectwaveguide':
@@ -268,6 +286,7 @@ export function PanelTransline(): JSX.Element {
               lengthM: v('l'),
             },
             e,
+            soldermask(),
           );
           break;
         case 'stripline':
@@ -519,6 +538,65 @@ export function PanelTransline(): JSX.Element {
               base={specFreqHz}
               onBase={setSpecFreqHz}
             />
+          )}
+          {maskApplies && (
+            <>
+              <label
+                className="calc-field"
+                title={
+                  'Enable solder resist / LPI overlay correction.  Affects εeff, Z0, and ' +
+                  'dielectric loss for microstrip, coupled microstrip, CPW, and CBCPW.'
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={smPresent}
+                  onChange={(e) => setSmPresent(e.target.checked)}
+                />
+                <span className="calc-field-label">Solder mask present</span>
+              </label>
+              {smPresent && (
+                <>
+                  <NumField
+                    label="Mask thickness:"
+                    units={LEN_UNITS}
+                    defaultUnit="µm"
+                    base={smThickM}
+                    onBase={setSmThickM}
+                  />
+                  <Field
+                    label="Mask εr:"
+                    value={smEr}
+                    onChange={setSmEr}
+                    unit=""
+                    title="Mask relative permittivity. Default 3.5 for standard green LPI. Range 3.3-3.8 for typical resins."
+                  />
+                  <Field
+                    label="Mask tanδ:"
+                    value={smTand}
+                    onChange={setSmTand}
+                    unit=""
+                    title="Mask loss tangent. Default 0.025 for LPI."
+                  />
+                  {(type === 'cpw' || type === 'gcpw') && (
+                    <label
+                      className="calc-field"
+                      title={
+                        'Enable when the mask fills the CPW slots (standard LPI process).\n' +
+                        'Disable for selective mask that covers only the traces.'
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={smFills}
+                        onChange={(e) => setSmFills(e.target.checked)}
+                      />
+                      <span className="calc-field-label">Mask fills gaps</span>
+                    </label>
+                  )}
+                </>
+              )}
+            </>
           )}
           <Field
             label="Conductor permeability (µ):"
