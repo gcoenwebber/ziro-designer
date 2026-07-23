@@ -135,6 +135,7 @@ import {
   resolveEffectiveNetClass,
 } from './schematic_settings.js';
 import { computeNetClassOverrides } from './net_overrides.js';
+import { schematicTextVarResolver } from '@ziroeda/eeschema';
 import { DialogExportBom } from './dialogs/dialog_export_bom.js';
 import { DialogExportNetlist } from './dialogs/dialog_export_netlist.js';
 import { DialogSymbolFieldsTable, type FieldsEdits } from './dialogs/dialog_symbol_fields_table.js';
@@ -986,6 +987,36 @@ export function SchematicEditor({
     [doc, libById, setup, netlist],
   );
 
+  // `${VAR}` resolver for a document: project text variables (Schematic Setup
+  // > Text Variables) + the sheet's title block + sheet/file tokens, per
+  // PROJECT / TITLE_BLOCK / SCHEMATIC TextVarResolver.
+  const resolverForDoc = useCallback(
+    (d: Schematic, file: string, path = '/') => {
+      const ps = getPageSettings(d);
+      return schematicTextVarResolver({
+        textVars: Object.fromEntries(
+          setup.textVars.filter((v) => v.name).map((v) => [v.name, v.value]),
+        ),
+        titleBlock: {
+          title: ps.title,
+          date: ps.date,
+          rev: ps.rev,
+          company: ps.company,
+          comments: ps.comments,
+        },
+        sheetName: path === '/' ? 'Root' : (path.split('/').filter(Boolean).pop() ?? 'Root'),
+        sheetPath: path,
+        fileName: file,
+        ...(projectName ? { projectName } : {}),
+      });
+    },
+    [setup.textVars, projectName],
+  );
+  const resolveTextVar = useMemo(
+    () => (doc ? resolverForDoc(doc, currentFile, currentPath) : undefined),
+    [doc, resolverForDoc, currentFile, currentPath],
+  );
+
   // Drawing defaults shared by every output (screen, print, plot), derived
   // from Schematic Setup > Formatting the way SCH_RENDER_SETTINGS is seeded
   // from SCHEMATIC_SETTINGS upstream (eeschema_config.cpp).
@@ -1017,12 +1048,13 @@ export function SchematicEditor({
         ...opts,
         ...drawingDefaults,
         ...(netOverrides ? { netOverrides } : {}),
+        ...(resolveTextVar ? { resolveTextVar } : {}),
         ...(activeSheet ? { sheet: activeSheet } : {}),
       };
       if (doc) printSheet(doc, printTheme, o, outputBaseName());
       setPrintOpen(false);
     },
-    [doc, theme, outputBaseName, activeSheet, drawingDefaults, netOverrides],
+    [doc, theme, outputBaseName, activeSheet, drawingDefaults, netOverrides, resolveTextVar],
   );
 
   // Print Preview (DIALOG_PRINT's Apply / OnPrintPreview): render into a new tab
@@ -1035,11 +1067,12 @@ export function SchematicEditor({
         ...opts,
         ...drawingDefaults,
         ...(netOverrides ? { netOverrides } : {}),
+        ...(resolveTextVar ? { resolveTextVar } : {}),
         ...(activeSheet ? { sheet: activeSheet } : {}),
       };
       if (doc) printSheet(doc, printTheme, o, outputBaseName(), true);
     },
-    [doc, theme, outputBaseName, activeSheet, drawingDefaults, netOverrides],
+    [doc, theme, outputBaseName, activeSheet, drawingDefaults, netOverrides, resolveTextVar],
   );
 
   // Bulk Edit Symbol Fields: apply the changed cells per sheet — the current
@@ -1084,13 +1117,17 @@ export function SchematicEditor({
         ...(activeSheet ? { sheet: activeSheet } : {}),
       };
       const one = (d: Schematic, name: string): void => {
-        // Netclass visuals resolve per sheet (each document has its own nets).
+        // Netclass visuals and text variables resolve per sheet.
         const nov = computeNetClassOverrides(
           d,
           new Map(d.libSymbols.map((l) => [l.libId, l])),
           setup,
         );
-        const od: PlotOpts = { ...o, ...(nov ? { netOverrides: nov } : {}) };
+        const od: PlotOpts = {
+          ...o,
+          ...(nov ? { netOverrides: nov } : {}),
+          resolveTextVar: resolverForDoc(d, name),
+        };
         if (format === 'svg') plotSvg(d, plotTheme, od, name);
         else if (format === 'png') void plotPng(d, plotTheme, od, name);
         else void plotPdf(d, plotTheme, od, name);
@@ -1101,7 +1138,7 @@ export function SchematicEditor({
       } else if (doc) one(doc, outputBaseName());
       setPlotOpen(false);
     },
-    [doc, theme, outputBaseName, liveDocs, activeSheet, drawingDefaults, setup],
+    [doc, theme, outputBaseName, liveDocs, activeSheet, drawingDefaults, setup, resolverForDoc],
   );
   useEffect(() => {
     // Changed search settings restart the scan (upstream m_foundItemHighlight reset).
@@ -1708,6 +1745,8 @@ export function SchematicEditor({
       ...drawingDefaults,
       // Wire colour/width/style + junction clamp from the resolved netclasses.
       ...(netOverrides ? { netOverrides } : {}),
+      // ${VAR} expansion in labels/text/fields (GetShownText).
+      ...(resolveTextVar ? { resolveTextVar } : {}),
       selectionThicknessMils: es.selection.thickness,
       highlightThicknessMils: es.selection.highlight_thickness,
       grid: {
@@ -1733,7 +1772,7 @@ export function SchematicEditor({
         },
       },
     }),
-    [es, activeSheet, setup, drawingDefaults, netOverrides],
+    [es, activeSheet, setup, drawingDefaults, netOverrides, resolveTextVar],
   );
 
   const inputPrefs = useMemo<InputPrefs>(

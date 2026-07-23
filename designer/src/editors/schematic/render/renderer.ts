@@ -21,6 +21,7 @@ import {
   type Transform,
 } from '@ziroeda/common';
 import {
+  expandTextVars,
   refId,
   symbolBodyBBox,
   danglingPinPositions,
@@ -76,6 +77,7 @@ interface FieldDraw {
 let g_fieldSch: Schematic | null = null;
 let g_fieldDraws: FieldDraw[][] = [];
 let g_fieldShowHidden = false;
+let g_fieldResolver: RenderOpts['resolveTextVar'];
 
 // Symbol body boxes are likewise cached per document: symbolBodyBBox walks every
 // graphic of every unit through the placement transform.
@@ -95,9 +97,11 @@ function fieldDrawsFor(
   libById: Map<string, LibSymbol>,
   showHidden: boolean,
 ): FieldDraw[][] {
-  if (sch === g_fieldSch && showHidden === g_fieldShowHidden) return g_fieldDraws;
+  if (sch === g_fieldSch && showHidden === g_fieldShowHidden && g_resolveText === g_fieldResolver)
+    return g_fieldDraws;
   g_fieldSch = sch;
   g_fieldShowHidden = showHidden;
+  g_fieldResolver = g_resolveText;
   g_fieldDraws = sch.symbols.map((sym) => {
     const lib = libById.get(sym.libId);
     // A multi-unit Reference gains its unit letter (GetRef(..., true)).
@@ -106,7 +110,8 @@ function fieldDrawsFor(
     for (const f of sym.fields) {
       if (!f.at) continue;
       if (f.effects?.hidden && !showHidden) continue;
-      const shown = fieldShownText(f, sym, unitCount);
+      // GetShownText: field values expand `${VAR}` (layout uses the result).
+      const shown = shownText(fieldShownText(f, sym, unitCount));
       if (shown === '') continue;
       const box = fieldBoundingBox(f, sym, shown, measureText);
       const fd: FieldDraw = {
@@ -205,6 +210,10 @@ export interface RenderOpts {
     lines: ReadonlyMap<string, { color?: string; widthIU?: number; dash?: string }>;
     junctions: ReadonlyMap<string, number>;
   };
+  /** Text-variable resolver (PROJECT/TITLE_BLOCK/SCHEMATIC TextVarResolver):
+   *  when set, `${VAR}` in labels, text, text boxes, tables and fields renders
+   *  expanded (GetShownText). Unset = text draws verbatim. */
+  resolveTextVar?: (token: string) => string | undefined;
   /** selection.thickness (mils). */
   selectionThicknessMils: number;
   /** selection.highlight_thickness (mils). */
@@ -254,6 +263,12 @@ let g_labelSizeRatio = 0.375; // DEFAULT_LABEL_SIZE_RATIO (box expansion)
 let g_pinSymbolSize = 0.635 * MM; // m_PinSymbolSize (25 mil); 0 = per-pin fallback
 // Netclass fallbacks for the current render (unset = no netclass visuals).
 let g_netOverrides: RenderOpts['netOverrides'];
+// Text-variable resolver for the current render (unset = draw verbatim).
+let g_resolveText: RenderOpts['resolveTextVar'];
+/** GetShownText: expand `${VAR}` when a resolver is active. */
+function shownText(text: string): string {
+  return g_resolveText && text.includes('${') ? expandTextVars(text, g_resolveText) : text;
+}
 const _GRID = 1.27 * MM; // 50 mil
 
 function libUnitMatches(u: LibSymbolUnit, unit: number, bodyStyle: number): boolean {
@@ -357,6 +372,7 @@ export function renderSchematic(
       ? opts.pinSymbolSizeIU
       : PIN_SYMBOL_SIZE;
   g_netOverrides = opts.netOverrides;
+  g_resolveText = opts.resolveTextVar;
   // The stroke font draws ~{...} overbars at the settings ratio (m_OverbarHeight).
   setOverbarHeightRatio(opts.overbarHeightRatio);
   const libById = new Map<string, LibSymbol>();
@@ -869,9 +885,12 @@ function wrapTextBox(text: string, maxWidth: number, height: number): string[] {
  */
 function drawTextBox(
   ctx: CanvasRenderingContext2D,
-  tb: Schematic['textBoxes'][number],
+  tbIn: Schematic['textBoxes'][number],
   theme: Theme,
 ): void {
+  // GetShownText: expand `${VAR}` before wrapping (substitution changes widths).
+  const tb =
+    g_resolveText && tbIn.text.includes('${') ? { ...tbIn, text: shownText(tbIn.text) } : tbIn;
   const x0 = Math.min(tb.start.x, tb.end.x),
     x1 = Math.max(tb.start.x, tb.end.x);
   const y0 = Math.min(tb.start.y, tb.end.y),
@@ -1020,7 +1039,7 @@ function drawTable(
     const cm = c.margins ?? m;
     drawBoxText(
       ctx,
-      c.text,
+      shownText(c.text),
       Math.min(c.start.x, c.end.x),
       Math.min(c.start.y, c.end.y),
       Math.max(c.start.x, c.end.x),
@@ -1253,6 +1272,9 @@ function drawLabel(
   theme: Theme,
   shadow?: { color: string; width: number },
 ): void {
+  // GetShownText: labels and free text expand `${VAR}` before layout, so the
+  // flag box and centring use the substituted width.
+  if (g_resolveText && l.text.includes('${')) l = { ...l, text: shownText(l.text) };
   const h = l.effects?.fontSize?.[0] ?? 1.27 * MM;
   const spin = labelSpin(l.angle, l.effects?.justify);
   // Free text uses its own font colour when set, else the notes-layer blue
