@@ -48,6 +48,8 @@ export interface PlotOpts {
   pinSymbolSizeIU?: number;
   /** Per-item netclass fallbacks for the plotted sheet (RenderOpts shape). */
   netOverrides?: RenderOpts['netOverrides'];
+  /** Text-variable resolver, so `${VAR}` plots expanded like the screen. */
+  resolveTextVar?: RenderOpts['resolveTextVar'];
 }
 
 /** An all-black-on-white theme for monochrome output (KiCad's B&W plot). */
@@ -119,6 +121,7 @@ function outputRenderOpts(opts: PlotOpts): RenderOpts {
     overbarHeightRatio: opts.overbarHeightRatio,
     pinSymbolSizeIU: opts.pinSymbolSizeIU,
     netOverrides: opts.netOverrides,
+    resolveTextVar: opts.resolveTextVar,
     selectionThicknessMils: 0,
     highlightThicknessMils: 0,
     grid: { show: false, sizeIU: 12700, style: 'dots', lineWidthPx: 1, minSpacingPx: 10 },
