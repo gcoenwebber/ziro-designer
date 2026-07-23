@@ -182,3 +182,118 @@ export function dispersedSubstrate(
     tanD: dsTanDeltaAt(ds, el.frequencyHz),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Solder mask overlay correction (Wan-Hoorfar 2000 / Svacina 1992 filling
+// factor + Bahl-Stuchly 1980 air-replacement). Port of KiCad
+// TRANSLINE_CALCULATION_BASE::WanHoorfarQ2 / ApplySoldermaskCorrection.
+// ---------------------------------------------------------------------------
+
+export interface SoldermaskParams {
+  present: boolean;
+  /** Cured mask thickness, m (typ. LPI 15-30 µm). */
+  thicknessM: number;
+  /** Mask relative permittivity (typ. LPI 3.3-3.8). */
+  epsilonR: number;
+  /** Mask loss tangent (typ. LPI 0.025-0.035). */
+  tanD: number;
+  /** CPW/CBCPW only: mask fills the coplanar slots. */
+  fillsGaps: boolean;
+}
+
+/** Wan-Hoorfar 2000 q2: field fraction between h and the boundary hBarTop·h. */
+export function wanHoorfarQ2(u: number, hBarTop: number): number {
+  // Eq. (4): Hammerstad-style effective strip width for wide strips.
+  const wBarEff = u + (2.0 / Math.PI) * Math.log(17.08 * (0.5 * u + 0.92));
+
+  // Eq. (5): v-bar parametrises the field contraction above the strip.
+  const denom = wBarEff * Math.PI - 4.0;
+  if (denom <= 0.0 || !Number.isFinite(denom)) return 0.0;
+
+  const vBar = (2.0 / Math.PI) * Math.atan(((2.0 * Math.PI) / denom) * (hBarTop - 1.0));
+  const halfPi = 0.5 * Math.PI * vBar;
+
+  if (u >= 1.0) {
+    // Wide strip: q1 from eq (2), q2 from the improved eq (12).
+    const q1 = 1.0 - Math.log(wBarEff * Math.PI - 1.0) / (2.0 * wBarEff);
+    const inner =
+      (2.0 * wBarEff * Math.cos(halfPi)) / (2.0 * hBarTop - 1.0 + vBar) + Math.sin(halfPi);
+    if (inner <= 0.0 || !Number.isFinite(inner)) return 0.0;
+    const correction = ((1.0 - vBar) / (2.0 * wBarEff)) * Math.log(inner);
+    return Math.max(0.0, 1.0 - q1 - correction);
+  }
+
+  // Narrow strip: eqs (6), (7), (8), (13).
+  const logEighth = Math.log(0.125 * u);
+  if (!Number.isFinite(logEighth) || logEighth === 0.0) return 0.0;
+
+  const q1 = 0.5 + 0.9 / (Math.PI * logEighth);
+  const bj = (hBarTop + 1.0) / (hBarTop + 0.25 * u - 1.0);
+  if (bj <= 0.0 || !Number.isFinite(bj)) return 0.0;
+
+  const acosArg = Math.sqrt(bj / hBarTop) * (hBarTop - 1.0 + 0.125 * u);
+  if (acosArg < -1.0 || acosArg > 1.0) return 0.0;
+
+  const correction = (Math.log(bj) * Math.acos(acosArg)) / (4.0 * logEighth);
+  return Math.max(0.0, 1.0 - q1 - correction);
+}
+
+/** Microstrip / coupled-microstrip incremental filling factor (KiCad override). */
+export function microstripSoldermaskDeltaQ(wOverH: number, cOverH: number): number {
+  if (wOverH <= 0.0 || cOverH <= 0.0) return 0.0;
+  const q2Coated = wanHoorfarQ2(wOverH, 1.0 + cOverH);
+  const q2Base = wanHoorfarQ2(wOverH, 1.0);
+  return Math.max(0.0, q2Coated - q2Base);
+}
+
+/** CPW / CBCPW empirical adaptation of the microstrip factor (KiCad override). */
+export function coplanarSoldermaskDeltaQ(
+  wOverH: number,
+  cOverH: number,
+  backMetal: boolean,
+  fillsGaps: boolean,
+): number {
+  const microstripDelta = microstripSoldermaskDeltaQ(wOverH, cOverH);
+  const halfSpace = backMetal ? 0.25 : 0.5;
+  const slotCoverage = fillsGaps ? 1.0 : 0.4;
+  return halfSpace * slotCoverage * microstripDelta;
+}
+
+/**
+ * Blend the mask into the uncoated effective permittivity / loss tangent.
+ * Mirrors KiCad's ApplySoldermaskCorrection guard rails: any missing or
+ * non-physical ingredient takes the bit-identical no-op path.
+ */
+export function applySoldermaskCorrection(
+  mask: SoldermaskParams | undefined,
+  hM: number,
+  epsEffUncoated: number,
+  tanDSubstrate: number,
+  epsRSubstrate: number,
+  deltaQ: number,
+): { epsEff: number; tanD: number; changed: boolean } {
+  const noop = { epsEff: epsEffUncoated, tanD: tanDSubstrate, changed: false };
+  if (!mask?.present) return noop;
+
+  const C = mask.thicknessM;
+  if (!(C > 0.0) || !(hM > 0.0) || !Number.isFinite(C) || !Number.isFinite(hM)) return noop;
+  if (!Number.isFinite(mask.epsilonR) || mask.epsilonR <= 1.0) return noop;
+  if (!Number.isFinite(mask.tanD) || mask.tanD < 0.0) return noop;
+  if (epsRSubstrate <= 1.0 || !Number.isFinite(epsRSubstrate)) return noop;
+  if (deltaQ <= 0.0) return noop;
+
+  // Air-replacement decomposition (Bahl-Stuchly 1980, d → ∞ limit).
+  const epsEffCoated = epsEffUncoated + deltaQ * (mask.epsilonR - 1.0);
+
+  const qSub = Math.min(1.0, Math.max(0.0, (epsEffUncoated - 1.0) / (epsRSubstrate - 1.0)));
+  const deltaQCapped = Math.min(deltaQ, Math.max(0.0, 1.0 - qSub));
+
+  let tanDCoated = tanDSubstrate;
+  if (epsEffCoated > 0.0) {
+    tanDCoated =
+      (qSub * epsRSubstrate * tanDSubstrate + deltaQCapped * mask.epsilonR * mask.tanD) /
+      epsEffCoated;
+  }
+
+  return { epsEff: epsEffCoated, tanD: tanDCoated, changed: epsEffCoated !== epsEffUncoated };
+}

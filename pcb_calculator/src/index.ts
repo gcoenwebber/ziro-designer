@@ -26,6 +26,11 @@ export {
   djordjevicSarkarFit,
   dsEpsilonRealAt,
   dsTanDeltaAt,
+  type SoldermaskParams,
+  applySoldermaskCorrection,
+  coplanarSoldermaskDeltaQ,
+  microstripSoldermaskDeltaQ,
+  wanHoorfarQ2,
 } from './transline/tc_common.js';
 export * from './transline/microstrip.js';
 export * from './transline/c_microstrip.js';
