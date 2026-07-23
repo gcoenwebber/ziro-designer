@@ -86,6 +86,9 @@ import {
   type SheetTreeNode,
   type ItemRef,
   describeItem,
+  itemRefById,
+  schPropertiesFor,
+  type PropRow,
 } from '@ziroeda/eeschema';
 import {
   SchematicCanvas,
@@ -141,6 +144,7 @@ import {
 } from '../../prefs/useSettings.js';
 import type { RenderOpts } from './render/renderer.js';
 import type { InputPrefs } from './components/SchematicCanvas.js';
+import { SchPropertiesPanel } from './components/SchPropertiesPanel.js';
 import '../../ui/shell.css';
 
 // What KiCad writes for File > New Schematic: an empty sheet on A4 paper.
@@ -2421,6 +2425,23 @@ export function SchematicEditor({
   };
   const zoomPct = Math.round(((scale * 10000 * dpr) / PX_PER_MM_100) * 100);
 
+  // Properties panel rows (SCH_PROPERTIES_PANEL): the property grid for a
+  // single selected item; multi-selections keep the count message for now
+  // (upstream shows the properties common to the whole selection — #77).
+  const propRows = useMemo<PropRow[]>(() => {
+    if (!doc || selection.size !== 1) return [];
+    const ref = itemRefById(doc, [...selection][0]!);
+    return ref ? schPropertiesFor(doc, libById, ref) : [];
+  }, [doc, selection, libById]);
+
+  // Parse a distance typed into the grid, in the current units, back to IU.
+  const parseDist = (text: string): number | null => {
+    const n = Number(text.trim());
+    if (!Number.isFinite(n)) return null;
+    const mm = units === 'mm' ? n : units === 'mils' ? n * 0.0254 : n * 25.4;
+    return Math.round(mmToIU(mm));
+  };
+
   // A load failure before any document exists is fatal; once a document is open,
   // a bad Open just shows a dismissible banner and leaves the current sheet intact.
   if (!doc) {
@@ -2514,11 +2535,20 @@ export function SchematicEditor({
               <div className="ze-panel grow">
                 <div className="ze-panel-header">Properties</div>
                 <div className="ze-panel-body">
-                  <div className="ze-muted">
-                    {selection.size === 0
-                      ? 'No objects selected'
-                      : `${selection.size} item(s) selected`}
-                  </div>
+                  {propRows.length > 0 ? (
+                    <SchPropertiesPanel
+                      rows={propRows}
+                      fmt={(iu) => fmt(iu)}
+                      parse={parseDist}
+                      onCommand={runCommand}
+                    />
+                  ) : (
+                    <div className="ze-muted">
+                      {selection.size === 0
+                        ? 'No objects selected'
+                        : `${selection.size} item(s) selected`}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
