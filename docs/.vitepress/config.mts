@@ -12,6 +12,8 @@ export default defineConfig({
   lang: "en-US",
   cleanUrls: true,
   lastUpdated: true,
+  // Contributor guide, kept in the repo but not rendered as a site page.
+  srcExclude: ["CLAUDE.md"],
   appearance: "dark", // brand is dark-first; toggle still available
 
   // Standalone docs site — its own Vercel project + subdomain (e.g.
